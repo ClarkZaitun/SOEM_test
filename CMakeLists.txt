@@ -3,7 +3,6 @@
 # full license information.
 
 cmake_minimum_required(VERSION 3.28)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 project(SOEM VERSION 2.0.0 LANGUAGES C)
 
@@ -64,41 +63,10 @@ if(PROJECT_IS_TOP_LEVEL)
     set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/install
       CACHE PATH "Default install path" FORCE)
   endif()
-  if(MSVC)
-    message(STATUS "Win32 MSVC")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /D _CRT_SECURE_NO_WARNINGS")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  /WX")
-  else()
-    message(STATUS "Win32 non-MSVC")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
-  endif()
-  set(OS_LIBS wpcap.lib Packet.lib Ws2_32.lib Winmm.lib)
-elseif(UNIX AND NOT APPLE)
-  set(OS "linux")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
-  set(OS_LIBS pthread rt)
-elseif(APPLE)
-  # This must come *before* linux or MacOSX will identify as Unix.
-  set(OS "macosx")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
-  set(OS_LIBS pthread pcap)
-elseif(${CMAKE_SYSTEM_NAME} MATCHES "rt-kernel")
-  set(OS "rtk")
-  message(STATUS "ARCH is ${ARCH}")
-  message(STATUS "BSP is ${BSP}")
-  include_directories(oshw/${OS}/${ARCH})
-  file(GLOB OSHW_EXTRA_SOURCES oshw/${OS}/${ARCH}/*.c)
-  set(OSHW_SOURCES "${OS_HW_SOURCES} ${OSHW_ARCHSOURCES}")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-but-set-variable")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-format")
-  set(OS_LIBS "-Wl,--start-group -l${BSP} -l${ARCH} -lkern -ldev -lsio -lblock -lfs -lusb -llwip -leth -li2c -lrtc -lcan -lnand -lspi -lnor -lpwm -ladc -ltrace -lc -lm -Wl,--end-group")
-elseif(${CMAKE_SYSTEM_NAME} MATCHES "rtems")
-  message(STATUS "Building for RTEMS")
-  set(OS "rtems")
-  set(SOEM_LIB_INSTALL_DIR ${LIB_DIR})
-  set(BUILD_TESTS FALSE)
+
+  message(STATUS "Current build type is: ${CMAKE_BUILD_TYPE}")
+  message(STATUS "Current install path is: ${CMAKE_INSTALL_PREFIX}")
+  message(STATUS "Building for ${CMAKE_SYSTEM_NAME}")
 endif()
 
 # Always use standard .o suffix
@@ -190,16 +158,26 @@ install(FILES
 )
 
 install(FILES
-  ${SOEM_HEADERS}
-  ${OSAL_HEADERS}
-  ${OSHW_HEADERS}
-  DESTINATION ${SOEM_INCLUDE_INSTALL_DIR})
+  README.md
+  LICENSE.md
+  DESTINATION .
+)
 
-if(BUILD_TESTS)
-  add_subdirectory(test/simple_ng)
-  add_subdirectory(test/linux/slaveinfo)
-  add_subdirectory(test/linux/eepromtool)
-  add_subdirectory(test/linux/simple_test)
+if(SOEM_BUILD_SAMPLES)
+  add_subdirectory(samples/ec_sample)
+  add_subdirectory(samples/eepromtool)
+  add_subdirectory(samples/firm_update)
+  add_subdirectory(samples/simple_ng)
+  add_subdirectory(samples/slaveinfo)
+
+  if (${CMAKE_SYSTEM_NAME} STREQUAL Linux)
+    add_subdirectory(samples/eoe_test)
+  endif()
+
+  find_package (Python3 QUIET)
+  if (Python3_FOUND)
+    add_subdirectory(samples/eni_test)
+  endif()
 endif()
 
 # Platform configuration
