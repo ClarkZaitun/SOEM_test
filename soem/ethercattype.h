@@ -532,6 +532,7 @@ typedef struct
 #define put_unaligned64(val, ptr)        \
   (memcpy((ptr), &(val), 8))
 
+// 大小端转换宏定义
 #if !defined(EC_BIG_ENDIAN) && defined(EC_LITTLE_ENDIAN)
 
   #define htoes(A) (A)

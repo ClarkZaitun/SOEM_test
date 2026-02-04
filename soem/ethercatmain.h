@@ -170,9 +170,12 @@ typedef struct ec_slave
    /** Physical type; Ebus, EtherNet combinations */
    uint8            ptype;
    /** topology: 1 to 3 links */
-   uint8            topology;
+   // 打开端口的个数
+   uint8 topology;
+   // 这里应该写错了，应该是0123位的bit或的结果
    /** active ports bitmap : ....3210 , set if respective port is active **/
-   uint8            activeports;
+   uint8 activeports;
+   // 这里应该写错了，应该是0123位的bit或的结果，实际只赋值，没有被使用
    /** consumed ports bitmap : ....3210, used for internal delay measurement **/
    uint8            consumedports;
    /** slave number for parent, 0=master */
@@ -192,8 +195,10 @@ typedef struct ec_slave
    /** propagation delay */
    int32            pdelay;
    /** next DC slave */
+   // 下一个DC从站的数组序号
    uint16           DCnext;
    /** previous DC slave */
+   // 上一个DC从站的数组序号
    uint16           DCprevious;
    /** DC cycle time in ns */
    int32            DCcycle;
@@ -222,6 +227,7 @@ typedef struct ec_slave
    /** if >0 block use of LRW in processdata */
    uint8            blockLRW;
    /** group */
+   // 从站所在组序号
    uint8            group;
    /** first unused FMMU */
    uint8            FMMUunused;
@@ -426,7 +432,7 @@ struct ecx_context
    int            (*EOEhook)(ecx_contextt * context, uint16 slave, void * eoembx);
    /** flag to control legacy automatic state change or manual state change */
    int            manualstatechange;
-   /** userdata, promotes application configuration esp. in EC_VER2 with multiple 
+   /** userdata, promotes application configuration esp. in EC_VER2 with multiple
     * ec_context instances. Note: userdata memory is managed by application, not SOEM */
    void           *userdata;
 };

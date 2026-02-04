@@ -102,6 +102,7 @@ int output_cvs(char *fname, int length)
    return 1;
 }
 
+// 初始化流程
 void eboxtest(char *ifname)
 {
    int cnt, i;
@@ -259,18 +260,32 @@ void add_timespec(struct timespec *ts, int64 addtime)
 }
 
 /* PI calculation to get linux time synced to DC time */
+// 实现PI控制器，使Linux时间与DC时间同步
 void ec_sync(int64 reftime, int64 cycletime , int64 *offsettime)
 {
-   int64 delta;
+   int64 delta; // 存储时间差值
    /* set linux sync point 50us later than DC sync, just as example */
+   // 计算参考时间减去50微秒后相对于循环周期的余数
+   // 50000ns = 50us，这里设置了Linux同步点比DC同步点晚50微秒
    delta = (reftime - 50000) % cycletime;
+
+   // 将delta调整到[-cycletime/2, cycletime/2]范围内，确保相位差最小
+   // 如果delta大于半周期，则减去一个完整周期，使其成为负值
    if(delta> (cycletime /2)) { delta= delta - cycletime; }
+
+   // 积分项累加：如果delta为正，积分增加；如果delta为负，积分减少
+   // 这是PI控制器的积分部分，用于消除稳态误差
    if(delta>0){ integral++; }
    if(delta<0){ integral--; }
+
+   // 计算输出的偏移时间，包含比例项和积分项
+   // -(delta / 100) 是比例项，系数为1/100
+   // (integral /20) 是积分项，系数为1/20
    *offsettime = -(delta / 100) - (integral /20);
 }
 
 /* RT EtherCAT thread */
+// 参数为指向周期时间的指针
 void ecatthread( void *ptr )
 {
    struct timespec   ts;
@@ -292,9 +307,10 @@ void ecatthread( void *ptr )
    dorun = 0;
    while(1)
    {
+      // 计算下一个周期开始时间
       /* calculate next cycle start */
       add_timespec(&ts, cycletime + toff);
-      /* wait to cycle start */
+      // 等待到周期开始时间
       pthread_cond_timedwait(&cond, &mutex, &ts);
       if (dorun>0)
       {
