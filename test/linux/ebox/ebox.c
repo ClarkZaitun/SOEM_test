@@ -267,6 +267,7 @@ void ec_sync(int64 reftime, int64 cycletime , int64 *offsettime)
    /* set linux sync point 50us later than DC sync, just as example */
    // 计算参考时间减去50微秒后相对于循环周期的余数
    // 50000ns = 50us，这里设置了Linux同步点比DC同步点晚50微秒
+   // TODO 50us的来源是什么？
    delta = (reftime - 50000) % cycletime;
 
    // 将delta调整到[-cycletime/2, cycletime/2]范围内，确保相位差最小
@@ -288,65 +289,86 @@ void ec_sync(int64 reftime, int64 cycletime , int64 *offsettime)
 // 参数为指向周期时间的指针
 void ecatthread( void *ptr )
 {
-   struct timespec   ts;
-   struct timeval    tp;
-   int ht;
-   int i;
-   int pcounter = 0;
-   int64 cycletime;
+   struct timespec   ts;          // 时间结构体，用于指定线程唤醒时间
+   struct timeval    tp;           // 时间值结构体，用于获取当前时间
+   int ht;                         // 用于存储毫秒值
+   int i;                          // 循环计数器
+   int pcounter = 0;               // 用于跟踪EBOX计数器的变化
+   int64 cycletime;                // 循环周期时间（纳秒）
 
+   // 锁定互斥量，保护共享资源
    pthread_mutex_lock(&mutex);
+   // 获取当前时间
    gettimeofday(&tp, NULL);
 
     /* Convert from timeval to timespec */
+   // 将timeval格式转换为timespec格式
    ts.tv_sec  = tp.tv_sec;
+   // 将微秒转换为毫秒并向上取整
    ht = (tp.tv_usec / 1000) + 1; /* round to nearest ms */
+   // 转换为纳秒
    ts.tv_nsec = ht * 1000000;
+   // 将周期时间从微秒转换为纳秒
    cycletime = *(int*)ptr * 1000; /* cycletime in ns */
+   // 重置时间偏移量
    toff = 0;
+   // 重置运行标志
    dorun = 0;
+   // 主循环
    while(1)
    {
       // 计算下一个周期开始时间
       /* calculate next cycle start */
       add_timespec(&ts, cycletime + toff);
-      // 等待到周期开始时间
+      // 等待到计算出的周期开始时间
       pthread_cond_timedwait(&cond, &mutex, &ts);
+      // 检查是否需要执行EtherCAT通信
       if (dorun>0)
       {
+         // 再次获取当前时间
          gettimeofday(&tp, NULL);
 
+         // 发送过程数据到EtherCAT从站
          ec_send_processdata();
 
+         // 接收来自EtherCAT从站的过程数据
          ec_receive_processdata(EC_TIMEOUTRET);
 
+         // 增加循环计数器
          cyclecount++;
 
 
+         // 检查是否有新的流数据可用且缓冲区未满
          if((in_EBOX->counter != pcounter) && (streampos < (MAXSTREAM - 1)))
          {
-            // check if we have timing problems in master
-            // if so, overwrite stream data so it shows up clearly in plots.
+            // 检查主站是否存在定时问题
+            // 如果是，则覆盖流数据以便在图表中明显显示
             if(in_EBOX->counter > (pcounter + 1))
             {
+               // 检测到主站定时问题，记录异常值
                for(i = 0 ; i < 50 ; i++)
                {
+                  // 使用明显的极值标记定时问题
                   stream1[streampos]   = 20000;
                   stream2[streampos++] = -20000;
                }
             }
             else
             {
+               // 正常情况：复制流数据到缓冲区
                for(i = 0 ; i < 50 ; i++)
                {
+                  // 交替复制两个通道的数据
                   stream1[streampos]   = in_EBOX->stream[i * 2];
                   stream2[streampos++] = in_EBOX->stream[(i * 2) + 1];
                }
             }
+            // 更新上次的计数器值
             pcounter = in_EBOX->counter;
          }
 
          /* calulate toff to get linux time and DC synced */
+         // 计算时间偏移量以同步Linux时间与DC时间
          ec_sync(ec_DCtime, cycletime, &toff);
       }
    }

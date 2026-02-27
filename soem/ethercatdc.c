@@ -59,6 +59,7 @@ void ecx_dcsync0(ecx_contextt *context, uint16 slave, boolean act, uint32 CyclTi
    // 初始化时间变量
    t1 = 0;
    // 读取从站的本地时间 0x910 8字节
+   // TODO 如果是32位时钟，高32位为0。使用一样的公式计算？
    (void)ecx_FPRD(context->port, slaveh, ECT_REG_DCSYSTIME, sizeof(t1), &t1, EC_TIMEOUTRET); /* read local time of slave */
    // 将读取的时间转换为主机字节序
    t1 = etohll(t1);
