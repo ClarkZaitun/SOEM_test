@@ -53,6 +53,7 @@ static void ecx_writedatagramdata(void *datagramdata, ec_cmdtype com, uint16 len
    }
 }
 
+// 在帧中只生成一个数据报
 /** Generate and set EtherCAT datagram in a standard ethernet frame.
  *
  * @param[in] port        = port context struct
@@ -90,6 +91,7 @@ int ecx_setupdatagram(ecx_portt *port, void *frame, uint8 com, uint8 idx, uint16
    return 0;
 }
 
+// 在帧中新增一个数据报
 /** Add EtherCAT datagram to a standard ethernet frame with existing datagram(s).
  *
  * @param[in] port        = port context struct
