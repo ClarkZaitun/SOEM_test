@@ -26,7 +26,27 @@ ec_timet osal_current_time(void)
    struct timespec current_time;
    ec_timet return_value;
 
+   //  CLOCK_REALTIME（实时时间）
+   //  含义：
+   //  表示系统的实际日期和时间（即墙钟时间），与 Unix 时间戳一致。它会受到系统时间调整的影响（如 NTP 同步、手动修改时间、时区变更等）。
+   //  时间起点：
+   //  1970-01-01 00:00:00 UTC（Unix 纪元时间）。
+   //  返回值表示从该起点开始经过的秒数和纳秒数（类似 time_t的高精度版本）。
+   //  特点：
+   //      可被用户或系统管理员修改（向前/向后跳变）。
+   //      可能受闰秒调整影响。
+   //      适用于需要真实世界时间的场景（如日志记录、定时任务）。
    clock_gettime(CLOCK_REALTIME, &current_time);
+   // CLOCK_MONOTONIC（单调时间）
+   //  含义：
+   //  表示一个单调递增的时钟，不受系统时间修改的影响。它始终向前推进（即使系统时间被回调或 NTP 调整）。
+   //  时间起点：
+   //  系统启动时的某个未指定时间点（通常接近开机时刻）。
+   //  具体起点值不暴露给用户空间，且不同启动周期的值无关联（重启后重置）。
+   //  特点：
+   //      永不减少（即使系统挂起/休眠也可能暂停，取决于实现）。
+   //      适合测量时间间隔（如性能分析、超时计算）。
+   //      不代表真实日期时间（无法直接转换为日历时间）。
    return_value.sec = current_time.tv_sec;
    return_value.usec = current_time.tv_nsec / 1000;
 

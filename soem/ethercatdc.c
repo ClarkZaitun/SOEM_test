@@ -344,7 +344,7 @@ boolean ecx_configdc(ecx_contextt *context)
    // BWR 0x0900 4字节
    ecx_BWR(context->port, 0, ECT_REG_DCTIME0, sizeof(ht), &ht, EC_TIMEOUTRET);
 
-   /* 获取当前系统时间并转换为EtherCAT时间格式 */
+   /* 获取当前系统时间（1970年1月1日开始时间）并转换为EtherCAT时间格式 */
    mastertime = osal_current_time();
    /* EtherCAT使用2000年1月1日作为纪元开始，而不是1970年1月1日 */
    mastertime.sec -= 946684800UL;
