@@ -92,6 +92,7 @@ static ec_eepromFMMUt   ec_FMMU;
 /** Global variable TRUE if error available in error stack */
 boolean                 EcatError = FALSE;
 
+// 参考时钟上一次时间 ns
 int64                   ec_DCtime;
 
 ecx_portt               ecx_port;
@@ -746,7 +747,7 @@ int ecx_readstate(ecx_contextt *context)
    {
       noerrorflag = TRUE;
       context->slavelist[0].ALstatuscode = 0;
-   }   
+   }
    else
    {
       noerrorflag = FALSE;
@@ -766,7 +767,7 @@ int ecx_readstate(ecx_contextt *context)
          allslavessamestate = FALSE;
          break;
    }
-    
+
    if (noerrorflag && allslavessamestate && allslavespresent)
    {
       /* No slave has toggled the error flag so the alstatuscode
@@ -819,7 +820,7 @@ int ecx_readstate(ecx_contextt *context)
       } while (lslave < *(context->slavecount));
       context->slavelist[0].state = lowest;
    }
-  
+
    return lowest;
 }
 
@@ -1677,9 +1678,9 @@ static int ecx_pullindex(ecx_contextt *context)
    return rval;
 }
 
-/** 
+/**
  * Clear the idx stack.
- * 
+ *
  * @param context           = context struct
  */
 static void ecx_clearindex(ecx_contextt *context)  {
@@ -1736,7 +1737,7 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
       length = context->grouplist[group].Obytes + context->grouplist[group].Ibytes;
       iomapinputoffset = 0;
    }
-   
+
    LogAdr = context->grouplist[group].logstartaddr;
    if(length)
    {
@@ -1771,7 +1772,8 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
                ecx_setupdatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_LRD, idx, w1, w2, sublength, data);
                if(first)
                {
-                  /* FPRMW in second datagram */
+                 /* FPRMW in second datagram */
+                  // FRMW 0x910 触发从站时间同步
                   DCO = ecx_adddatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_FRMW, idx, FALSE,
                                            context->slavelist[context->grouplist[group].DCnext].configadr,
                                            ECT_REG_DCSYSTIME, sizeof(int64), context->DCtime);
@@ -1850,7 +1852,8 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
             ecx_setupdatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_LRW, idx, w1, w2, sublength, data);
             if(first)
             {
-               /* FPRMW in second datagram */
+              /* FPRMW in second datagram */
+               // FRMW 0x910 触发从站时间同步
                DCO = ecx_adddatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_FRMW, idx, FALSE,
                                         context->slavelist[context->grouplist[group].DCnext].configadr,
                                         ECT_REG_DCSYSTIME, sizeof(int64), context->DCtime);
@@ -1859,11 +1862,11 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
             /* send frame */
             ecx_outframe_red(context->port, idx);
             /* push index and data pointer on stack.
-             * the iomapinputoffset compensate for where the inputs are stored 
+             * the iomapinputoffset compensate for where the inputs are stored
              * in the IOmap if we use an overlapping IOmap. If a regular IOmap
              * is used it should always be 0.
              */
-            ecx_pushindex(context, idx, (data + iomapinputoffset), sublength, DCO);      
+            ecx_pushindex(context, idx, (data + iomapinputoffset), sublength, DCO);
             length -= sublength;
             LogAdr += sublength;
             data += sublength;
@@ -1950,6 +1953,7 @@ int ecx_receive_processdata_group(ecx_contextt *context, uint8 group, int timeou
                memcpy(idxstack->data[pos], &(rxbuf[idx][EC_HEADERSIZE]), idxstack->length[pos]);
                memcpy(&le_wkc, &(rxbuf[idx][EC_HEADERSIZE + idxstack->length[pos]]), EC_WKCSIZE);
                wkc = etohs(le_wkc);
+               // 获得参考时钟时间
                memcpy(&le_DCtime, &(rxbuf[idx][idxstack->dcoffset[pos]]), sizeof(le_DCtime));
                *(context->DCtime) = etohll(le_DCtime);
             }
@@ -1968,6 +1972,7 @@ int ecx_receive_processdata_group(ecx_contextt *context, uint8 group, int timeou
                memcpy(&le_wkc, &(rxbuf[idx][EC_HEADERSIZE + idxstack->length[pos]]), EC_WKCSIZE);
                /* output WKC counts 2 times when using LRW, emulate the same for LWR */
                wkc = etohs(le_wkc) * 2;
+               // 获得参考时钟时间
                memcpy(&le_DCtime, &(rxbuf[idx][idxstack->dcoffset[pos]]), sizeof(le_DCtime));
                *(context->DCtime) = etohll(le_DCtime);
             }

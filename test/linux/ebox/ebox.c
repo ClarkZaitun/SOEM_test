@@ -25,6 +25,7 @@
 
 #define NSEC_PER_SEC 1000000000
 
+// E/BOX 设备的输入输出数据结构体，用于 EtherCAT 通信中的过程数据映射（PDO）
 typedef struct PACKED
 {
    uint8         status;
@@ -54,10 +55,10 @@ typedef struct PACKED
    uint8         control;
 } out_EBOX_streamt;
 
-// total samples to capture
+// 要采集的总采样数
 #define MAXSTREAM 200000
-// sample interval in ns, here 8us -> 125kHz
-// maximum data rate for E/BOX v1.0.1 is around 150kHz
+// 采样间隔，单位为纳秒，此处为 8 微秒 -> 125kHz
+// E/BOX v1.0.1 的最大数据速率约为 150kHz
 #define SYNC0TIME 8000
 
 struct sched_param schedp;
@@ -66,7 +67,7 @@ pthread_t thread1;
 struct timeval tv,t1,t2;
 int dorun = 0;
 int deltat, tmax=0;
-int64 toff;
+int64 toff;  // 偏移时间（纳秒）
 int DCdiff;
 int os;
 uint32 ob;
@@ -74,6 +75,7 @@ int16 ob2;
 uint8 ob3;
 pthread_cond_t  cond  = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+// 时间同步算法积分值
 int64 integral=0;
 uint32 cyclecount;
 in_EBOX_streamt  *in_EBOX;
@@ -132,6 +134,7 @@ void eboxtest(char *ifname)
 
          ec_config_map(&IOmap);
 
+         // 配置 DC
          ec_configdc();
 
          /* wait for all slaves to reach SAFE_OP state */
@@ -261,6 +264,12 @@ void add_timespec(struct timespec *ts, int64 addtime)
 
 /* PI calculation to get linux time synced to DC time */
 // 实现PI控制器，使Linux时间与DC时间同步
+// 输入：
+// reftime：从站参考时钟时间（DC时间），单位为纳秒
+// cycletime：循环周期时间，单位为纳秒
+// offsettime：输出参数，用于存储计算得到的时间偏移量，单位为纳秒
+// 输出：
+// offsettime：根据PI控制器计算得到的时间偏移量，单位为纳秒
 void ec_sync(int64 reftime, int64 cycletime , int64 *offsettime)
 {
    int64 delta; // 存储时间差值
@@ -289,16 +298,17 @@ void ec_sync(int64 reftime, int64 cycletime , int64 *offsettime)
 // 参数为指向周期时间的指针
 void ecatthread( void *ptr )
 {
-   struct timespec   ts;          // 时间结构体，用于指定线程唤醒时间
-   struct timeval    tp;           // 时间值结构体，用于获取当前时间
+   struct timespec   ts; // 收发帧累计时间结构体，用于指定线程唤醒时间，从 tp 计算得到，精确到纳秒
+   struct timeval    tp; // 主站当前时间结构体
    int ht;                         // 用于存储毫秒值
    int i;                          // 循环计数器
-   int pcounter = 0;               // 用于跟踪EBOX计数器的变化
+   int pcounter = 0;               // 主站内的计数器，用于跟踪EBOX计数器的变化
    int64 cycletime;                // 循环周期时间（纳秒）
 
    // 锁定互斥量，保护共享资源
    pthread_mutex_lock(&mutex);
-   // 获取当前时间
+   // 获取当前的系统时间，精确到微秒级别。
+   // osal_current_time() 函数获取当前系统时间里面的时间也是（秒和微秒）
    gettimeofday(&tp, NULL);
 
     /* Convert from timeval to timespec */
@@ -317,10 +327,11 @@ void ecatthread( void *ptr )
    // 主循环
    while(1)
    {
-      // 计算下一个周期开始时间
+      // 计算下一个周期开始时间（累加时间 ts 与周期时间 cycletime，同步算法调整值 toff 之和）
       /* calculate next cycle start */
       add_timespec(&ts, cycletime + toff);
       // 等待到计算出的周期开始时间
+      // 条件变量定时等待：让当前线程等待条件变量 cond 被信号唤醒，或者直到指定的时间 ts 到达。
       pthread_cond_timedwait(&cond, &mutex, &ts);
       // 检查是否需要执行EtherCAT通信
       if (dorun>0)
@@ -328,7 +339,7 @@ void ecatthread( void *ptr )
          // 再次获取当前时间
          gettimeofday(&tp, NULL);
 
-         // 发送过程数据到EtherCAT从站
+         // 发送Group 0过程数据到EtherCAT从站
          ec_send_processdata();
 
          // 接收来自EtherCAT从站的过程数据

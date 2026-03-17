@@ -415,6 +415,7 @@ struct ecx_context
    /** reference to ecaterror state */
    boolean        *ecaterror;
    /** reference to last DC time from slaves */
+   // 参考时钟上一次时间 ns
    int64          *DCtime;
    /** internal, SM buffer */
    ec_SMcommtypet *SMcommtype;

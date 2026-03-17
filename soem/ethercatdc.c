@@ -388,6 +388,7 @@ boolean ecx_configdc(ecx_contextt *context)
          /* 读取64位系统偏移量寄存器  0x0918*/
          (void)ecx_FPRD(context->port, slaveh, ECT_REG_DCSOF, sizeof(hrt), &hrt, EC_TIMEOUTRET);
          /* 使用它作为偏移量，使本地时间围绕0+mastertime设置 */
+         // 直接使用电脑的系统时间和从站时间做差，得到系统偏移量
          hrt = htoell(-etohll(hrt) + mastertime64);
          /* 将偏移量写入偏移寄存器 */
          // FPWR 0x0920 8字节
