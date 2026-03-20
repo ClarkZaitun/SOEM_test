@@ -102,179 +102,173 @@ PACKED_END
 
 typedef struct ecx_context ecx_contextt;
 
-/** for list of ethercat slaves detected */
+/** EtherCAT从站信息结构体，用于存储检测到的从站信息 */
 typedef struct ec_slave
 {
-   /** state of slave */
+   /** 从站状态 */
    uint16           state;
-   /** AL status code */
+   /** AL状态码 */
    uint16           ALstatuscode;
-   /** Configured address */
+   /** 配置地址 */
    uint16           configadr;
-   /** Alias address */
+   /** 别名地址 */
    uint16           aliasadr;
-   /** Manufacturer from EEprom */
+   /** EEPROM中的制造商ID */
    uint32           eep_man;
-   /** ID from EEprom */
+   /** EEPROM中的产品ID */
    uint32           eep_id;
-   /** revision from EEprom */
+   /** EEPROM中的修订号 */
    uint32           eep_rev;
-   /** Interface type */
+   /** 接口类型 */
    uint16           Itype;
-   /** Device type */
+   /** 设备类型 */
    uint16           Dtype;
-   /** output bits */
+   /** 输出位数 */
    uint16           Obits;
-   /** output bytes, if Obits < 8 then Obytes = 0 */
+   /** 输出字节数，如果Obits < 8则Obytes = 0 */
    uint32           Obytes;
-   /** output pointer in IOmap buffer */
+   /** IOmap缓冲区中的输出指针 */
    uint8            *outputs;
-   /** startbit in first output byte */
+   /** 第一个输出字节中的起始位 */
    uint8            Ostartbit;
-   /** input bits */
+   /** 输入位数 */
    uint16           Ibits;
-   /** input bytes, if Ibits < 8 then Ibytes = 0 */
+   /** 输入字节数，如果Ibits < 8则Ibytes = 0 */
    uint32           Ibytes;
-   /** input pointer in IOmap buffer */
+   /** IOmap缓冲区中的输入指针 */
    uint8            *inputs;
-   /** startbit in first input byte */
+   /** 第一个输入字节中的起始位 */
    uint8            Istartbit;
-   /** SM structure */
+   /** 同步管理器(SM)结构 */
    ec_smt           SM[EC_MAXSM];
-   /** SM type 0=unused 1=MbxWr 2=MbxRd 3=Outputs 4=Inputs */
+   /** SM类型：0=未使用 1=邮箱写 2=邮箱读 3=输出 4=输入 */
    uint8            SMtype[EC_MAXSM];
-   /** FMMU structure */
+   /** FMMU结构 */
    ec_fmmut         FMMU[EC_MAXFMMU];
-   /** FMMU0 function */
+   /** FMMU0功能 */
    uint8            FMMU0func;
-   /** FMMU1 function */
+   /** FMMU1功能 */
    uint8            FMMU1func;
-   /** FMMU2 function */
+   /** FMMU2功能 */
    uint8            FMMU2func;
-   /** FMMU3 function */
+   /** FMMU3功能 */
    uint8            FMMU3func;
-   /** length of write mailbox in bytes, if no mailbox then 0 */
+   /** 写邮箱长度（字节），无邮箱则为0 */
    uint16           mbx_l;
-   /** mailbox write offset */
+   /** 邮箱写偏移量 */
    uint16           mbx_wo;
-   /** length of read mailbox in bytes */
+   /** 读邮箱长度（字节） */
    uint16           mbx_rl;
-   /** mailbox read offset */
+   /** 邮箱读偏移量 */
    uint16           mbx_ro;
-   /** mailbox supported protocols */
+   /** 邮箱支持的协议 */
    uint16           mbx_proto;
-   /** Counter value of mailbox link layer protocol 1..7 */
+   /** 邮箱链路层协议计数器值 1..7 */
    uint8            mbx_cnt;
-   /** has DC capability */
+   /** 是否具有DC（分布式时钟）能力 */
    boolean          hasdc;
-   /** Physical type; Ebus, EtherNet combinations */
+   /** 物理类型：Ebus、EtherNet组合 */
    uint8            ptype;
-   /** topology: 1 to 3 links */
-   // 打开端口的个数
+   /** 拓扑结构：1到3个链路 */
    uint8 topology;
-   // 这里应该写错了，应该是0123位的bit或的结果
-   /** active ports bitmap : ....3210 , set if respective port is active **/
+   /** 活跃端口位图：....3210，相应端口活跃时置位 */
    uint8 activeports;
-   // 这里应该写错了，应该是0123位的bit或的结果，实际只赋值，没有被使用
-   /** consumed ports bitmap : ....3210, used for internal delay measurement **/
+   /** 已消费端口位图：....3210，用于内部延迟测量 */
    uint8            consumedports;
-   /** slave number for parent, 0=master */
+   /** 父节点从站号，0=主站 */
    uint16           parent;
-   /** port number on parent this slave is connected to **/
+   /** 父节点上连接此从站的端口号 */
    uint8            parentport;
-   /** port number on this slave the parent is connected to **/
+   /** 此从站上连接父节点的端口号 */
    uint8            entryport;
-   /** DC receivetimes on port A */
+   /** 端口A的DC接收时间 */
    int32            DCrtA;
-   /** DC receivetimes on port B */
+   /** 端口B的DC接收时间 */
    int32            DCrtB;
-   /** DC receivetimes on port C */
+   /** 端口C的DC接收时间 */
    int32            DCrtC;
-   /** DC receivetimes on port D */
+   /** 端口D的DC接收时间 */
    int32            DCrtD;
-   /** propagation delay */
+   /** 传播延迟 */
    int32            pdelay;
-   /** next DC slave */
-   // 下一个DC从站的数组序号
+   /** 下一个DC从站的数组序号 */
    uint16           DCnext;
-   /** previous DC slave */
-   // 上一个DC从站的数组序号
+   /** 上一个DC从站的数组序号 */
    uint16           DCprevious;
-   /** DC cycle time in ns */
+   /** DC周期时间（纳秒） */
    int32            DCcycle;
-   /** DC shift from clock modulus boundary */
+   /** 距时钟模边界的DC偏移 */
    int32            DCshift;
-   /** DC sync activation, 0=off, 1=on */
+   /** DC同步激活：0=关闭，1=开启 */
    uint8            DCactive;
-   /** link to config table */
+   /** 链接到配置表 */
    uint16           configindex;
-   /** link to SII config */
+   /** 链接到SII配置 */
    uint16           SIIindex;
-   /** 1 = 8 bytes per read, 0 = 4 bytes per read */
+   /** 1=每次读取8字节，0=每次读取4字节 */
    uint8            eep_8byte;
-   /** 0 = eeprom to master , 1 = eeprom to PDI */
+   /** 0=EEPROM归主站，1=EEPROM归PDI */
    uint8            eep_pdi;
-   /** CoE details */
+   /** CoE详细信息 */
    uint8            CoEdetails;
-   /** FoE details */
+   /** FoE详细信息 */
    uint8            FoEdetails;
-   /** EoE details */
+   /** EoE详细信息 */
    uint8            EoEdetails;
-   /** SoE details */
+   /** SoE详细信息 */
    uint8            SoEdetails;
-   /** E-bus current */
+   /** E-bus电流 */
    int16            Ebuscurrent;
-   /** if >0 block use of LRW in processdata */
+   /** 如果>0，在过程数据中阻止使用LRW */
    uint8            blockLRW;
-   /** group */
-   // 从站所在组序号
+   /** 从站所在组序号 */
    uint8            group;
-   /** first unused FMMU */
+   /** 第一个未使用的FMMU */
    uint8            FMMUunused;
-   /** Boolean for tracking whether the slave is (not) responding, not used/set by the SOEM library */
+   /** 用于跟踪从站是否（不）响应的布尔值，SOEM库未使用/设置 */
    boolean          islost;
-   /** registered configuration function PO->SO, (DEPRECATED)*/
+   /** 注册的配置函数 PO->SO（已弃用）*/
    int              (*PO2SOconfig)(uint16 slave);
-   /** registered configuration function PO->SO */
+   /** 注册的配置函数 PO->SO */
    int              (*PO2SOconfigx)(ecx_contextt * context, uint16 slave);
-   /** readable name */
+   /** 可读名称 */
    char             name[EC_MAXNAME + 1];
 } ec_slavet;
 
-/** for list of ethercat slave groups */
+/** EtherCAT从站组列表结构体 */
 typedef struct ec_group
 {
-   /** logical start address for this group */
+   /** 该组的逻辑起始地址 */
    uint32           logstartaddr;
-   /** output bytes, if Obits < 8 then Obytes = 0 */
+   /** 输出字节数，如果Obits < 8则Obytes = 0 */
    uint32           Obytes;
-   /** output pointer in IOmap buffer */
+   /** IOmap缓冲区中的输出指针 */
    uint8            *outputs;
-   /** input bytes, if Ibits < 8 then Ibytes = 0 */
+   /** 输入字节数，如果Ibits < 8则Ibytes = 0 */
    uint32           Ibytes;
-   /** input pointer in IOmap buffer */
+   /** IOmap缓冲区中的输入指针 */
    uint8            *inputs;
-   /** has DC capabillity */
+   /** 是否具有DC（分布式时钟）能力 */
    boolean          hasdc;
-   /** next DC slave */
+   /** 下一个DC从站 */
    uint16           DCnext;
-   /** E-bus current */
+   /** E-bus电流 */
    int16            Ebuscurrent;
-   /** if >0 block use of LRW in processdata */
+   /** 如果>0，则在过程数据中阻止使用LRW */
    uint8            blockLRW;
-   /** IO segments used */
+   /** 使用的IO段数量 */
    uint16           nsegments;
-   /** 1st input segment */
+   /** 第一个输入段 */
    uint16           Isegment;
-   /** Offset in input segment */
+   /** 输入段中的偏移量 */
    uint16           Ioffset;
-   /** Expected workcounter outputs */
+   /** 预期的输出工作计数器 */
    uint16           outputsWKC;
-   /** Expected workcounter inputs */
+   /** 预期的输入工作计数器 */
    uint16           inputsWKC;
-   /** check slave states */
+   /** 是否检查从站状态 */
    boolean          docheckstate;
-   /** IO segmentation list. Datagrams must not break SM in two. */
+   /** IO分段列表。数据报不能将SM分成两部分。 */
    uint32           IOsegment[EC_MAXIOSEGMENTS];
 } ec_groupt;
 
@@ -387,54 +381,53 @@ typedef struct PACKED ec_PDOdesc
 } ec_PDOdesct;
 PACKED_END
 
-/** Context structure , referenced by all ecx functions*/
+/** EtherCAT主站上下文结构体，所有ecx函数都引用此结构 */
 struct ecx_context
 {
-   /** port reference, may include red_port */
+   /** 端口引用，可能包含冗余端口 */
    ecx_portt      *port;
-   /** slavelist reference */
+   /** 从站列表引用 */
    ec_slavet      *slavelist;
-   /** number of slaves found in configuration */
+   /** 配置中发现的从站数量 */
    int            *slavecount;
-   /** maximum number of slaves allowed in slavelist */
+   /** 从站列表允许的最大从站数 */
    int            maxslave;
-   /** grouplist reference */
+   /** 组列表引用 */
    ec_groupt      *grouplist;
-   /** maximum number of groups allowed in grouplist */
+   /** 组列表允许的最大组数 */
    int            maxgroup;
-   /** internal, reference to eeprom cache buffer */
+   /** 内部：EEPROM缓存缓冲区引用 */
    uint8          *esibuf;
-   /** internal, reference to eeprom cache map */
+   /** 内部：EEPROM缓存映射引用 */
    uint32         *esimap;
-   /** internal, current slave for eeprom cache */
+   /** 内部：当前EEPROM缓存的从站 */
    uint16         esislave;
-   /** internal, reference to error list */
+   /** 内部：错误列表引用 */
    ec_eringt      *elist;
-   /** internal, reference to processdata stack buffer info */
+   /** 内部：过程数据栈缓冲区信息引用 */
    ec_idxstackT   *idxstack;
-   /** reference to ecaterror state */
+   /** EtherCAT错误状态引用 */
    boolean        *ecaterror;
-   /** reference to last DC time from slaves */
-   // 参考时钟上一次时间 ns
+   /** 从站最后一次DC时间引用（纳秒） */
    int64          *DCtime;
-   /** internal, SM buffer */
+   /** 内部：SM缓冲区 */
    ec_SMcommtypet *SMcommtype;
-   /** internal, PDO assign list */
+   /** 内部：PDO分配列表 */
    ec_PDOassignt  *PDOassign;
-   /** internal, PDO description list */
+   /** 内部：PDO描述列表 */
    ec_PDOdesct    *PDOdesc;
-   /** internal, SM list from eeprom */
+   /** 内部：来自EEPROM的SM列表 */
    ec_eepromSMt   *eepSM;
-   /** internal, FMMU list from eeprom */
+   /** 内部：来自EEPROM的FMMU列表 */
    ec_eepromFMMUt *eepFMMU;
-   /** registered FoE hook */
+   /** 注册的FoE钩子函数 */
    int            (*FOEhook)(uint16 slave, int packetnumber, int datasize);
-   /** registered EoE hook */
+   /** 注册的EoE钩子函数 */
    int            (*EOEhook)(ecx_contextt * context, uint16 slave, void * eoembx);
-   /** flag to control legacy automatic state change or manual state change */
+   /** 控制传统自动状态变更或手动状态变更的标志 */
    int            manualstatechange;
-   /** userdata, promotes application configuration esp. in EC_VER2 with multiple
-    * ec_context instances. Note: userdata memory is managed by application, not SOEM */
+   /** 用户数据，用于应用程序配置，特别是在EC_VER2中支持多个ec_context实例。
+    * 注意：用户数据内存由应用程序管理，而非SOEM */
    void           *userdata;
 };
 

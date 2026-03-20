@@ -100,6 +100,11 @@ int ec_findconfig( uint32 man, uint32 id)
 }
 #endif
 
+/** 初始化EtherCAT主站上下文。
+ * 清除从站列表和组列表，并为每个组设置默认的逻辑起始地址。
+ *
+ * @param[in] context = 要初始化的上下文结构体
+ */
 void ecx_init_context(ecx_contextt *context)
 {
    int lp;
@@ -316,7 +321,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
    int wkc, cindex, nSM;
    uint16 val16;
 
-   EC_PRINT("ec_config_init %d\n",usetable);
+   EC_PRINT("ec_config_init %d\n", usetable);
+   // 初始化上下文，组
    ecx_init_context(context);
    wkc = ecx_detect_slaves(context);
    if (wkc > 0)
@@ -841,6 +847,15 @@ static int ecx_get_threadcount(void)
    return thrc;
 }
 
+/** 查找并配置指定组中从站的PDO映射。
+ *
+ * 该函数使用CoE（CANopen over EtherCAT）、SoE（Servo over EtherCAT）
+ * 和SII（从站信息接口）方法发现指定组中所有从站的PDO映射。
+ * 它根据发现的映射为每个从站配置同步管理器。
+ *
+ * @param[in] context = 包含从站列表的上下文结构体
+ * @param[in] group   = 组号，0表示所有组
+ */
 static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
 {
    int thrn, thrc;
@@ -893,7 +908,20 @@ static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
    }
 }
 
-static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap, 
+/** 为指定组中的从站创建输入FMMU映射。
+ *
+ * 该函数为从站的输入数据配置FMMU（现场总线内存管理单元）。
+ * 它将从站的输入同步管理器映射到IOmap中的逻辑地址空间。
+ * 该函数同时处理面向位和面向字节的从站。
+ *
+ * @param[in]     context  = 包含从站列表的上下文结构体
+ * @param[in,out] pIOmap   = 指向IOmap缓冲区的指针
+ * @param[in]     group    = 组号，0表示所有组
+ * @param[in]     slave    = 要创建输入映射的从站号
+ * @param[in,out] LogAddr  = 指向当前逻辑地址的指针（会被更新）
+ * @param[in,out] BitPos   = 指向当前位位置的指针（会被更新）
+ */
+static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap,
    uint8 group, int16 slave, uint32 * LogAddr, uint8 * BitPos)
 {
    int BitCount = 0;
@@ -1012,8 +1040,8 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
          if (group)
          {
             context->slavelist[slave].inputs =
-               (uint8 *)(pIOmap) + 
-               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) - 
+               (uint8 *)(pIOmap) +
+               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) -
                context->grouplist[group].logstartaddr;
          }
          else
@@ -1037,7 +1065,20 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
       context->grouplist[group].inputsWKC++;
 }
 
-static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOmap, 
+/** 为指定组中的从站创建输出FMMU映射。
+ *
+ * 该函数为从站的输出数据配置FMMU（现场总线内存管理单元）。
+ * 它将从站的输出同步管理器映射到IOmap中的逻辑地址空间。
+ * 该函数同时处理面向位和面向字节的从站。
+ *
+ * @param[in]     context  = 包含从站列表的上下文结构体
+ * @param[in,out] pIOmap   = 指向IOmap缓冲区的指针
+ * @param[in]     group    = 组号，0表示所有组
+ * @param[in]     slave    = 要创建输出映射的从站号
+ * @param[in,out] LogAddr  = 指向当前逻辑地址的指针（会被更新）
+ * @param[in,out] BitPos   = 指向当前位位置的指针（会被更新）
+ */
+static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOmap,
    uint8 group, int16 slave, uint32 * LogAddr, uint8 * BitPos)
 {
    int BitCount = 0;
@@ -1150,14 +1191,14 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
          if (group)
          {
             context->slavelist[slave].outputs =
-               (uint8 *)(pIOmap) + 
-               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) - 
+               (uint8 *)(pIOmap) +
+               etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) -
                context->grouplist[group].logstartaddr;
          }
          else
          {
             context->slavelist[slave].outputs =
-               (uint8 *)(pIOmap) + 
+               (uint8 *)(pIOmap) +
                etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
          }
          context->slavelist[slave].Ostartbit =
@@ -1175,6 +1216,18 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
       context->grouplist[group].outputsWKC++;
 }
 
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入按顺序排列。
+ *
+ * 这是主要的IO映射函数，用于将指定组中所有从站的PDO数据映射到
+ * IOmap缓冲区。输出数据首先映射，然后是输入数据。该函数配置
+ * 所有必要的FMMU，并计算工作计数器（WKC）值。
+ *
+ * @param[in]  context           = 包含从站列表的上下文结构体
+ * @param[out] pIOmap            = 指向IOmap缓冲区的指针
+ * @param[in]  group             = 组号，0表示所有组
+ * @param[in]  forceByteAlignment = 是否强制字节对齐
+ * @return IOmap的大小（字节），失败时返回0
+ */
 static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 group, boolean forceByteAlignment)
 {
    uint16 slave, configadr;
@@ -1218,7 +1271,7 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
                      LogAddr++;
                      BitPos = 0;
                   }
-               } 
+               }
 
                diff = LogAddr - oLogAddr;
                oLogAddr = LogAddr;
@@ -1265,7 +1318,7 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
       if (!group)
       {
          context->slavelist[0].outputs = pIOmap;
-         context->slavelist[0].Obytes = LogAddr - 
+         context->slavelist[0].Obytes = LogAddr -
             context->grouplist[group].logstartaddr; /* store output bytes in master record */
       }
 
@@ -1278,9 +1331,9 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
             /* create input mapping */
             if (context->slavelist[slave].Ibits)
             {
- 
+
                ecx_config_create_input_mappings(context, pIOmap, group, slave, &LogAddr, &BitPos);
-               
+
                if (forceByteAlignment)
                {
                   /* Force byte alignment if the input is < 8 bits */
@@ -1289,7 +1342,7 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
                      LogAddr++;
                      BitPos = 0;
                   }
-               } 
+               }
 
                diff = LogAddr - oLogAddr;
                oLogAddr = LogAddr;
@@ -1348,14 +1401,14 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
       context->grouplist[group].IOsegment[currentsegment] = segmentsize;
       context->grouplist[group].nsegments = currentsegment + 1;
       context->grouplist[group].inputs = (uint8 *)(pIOmap) + context->grouplist[group].Obytes;
-      context->grouplist[group].Ibytes = LogAddr - 
-         context->grouplist[group].logstartaddr - 
+      context->grouplist[group].Ibytes = LogAddr -
+         context->grouplist[group].logstartaddr -
          context->grouplist[group].Obytes;
       if (!group)
       {
          context->slavelist[0].inputs = (uint8 *)(pIOmap) + context->slavelist[0].Obytes;
-         context->slavelist[0].Ibytes = LogAddr - 
-            context->grouplist[group].logstartaddr - 
+         context->slavelist[0].Ibytes = LogAddr -
+            context->grouplist[group].logstartaddr -
             context->slavelist[0].Obytes; /* store input bytes in master record */
       }
 
@@ -1367,41 +1420,37 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
    return 0;
 }
 
-/** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
-* in sequential order (legacy SOEM way).
-*
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入按顺序排列（传统SOEM方式）。
  *
- * @param[in]  context    = context struct
- * @param[out] pIOmap     = pointer to IOmap
- * @param[in]  group      = group to map, 0 = all groups
- * @return IOmap size
+ * @param[in]  context    = 上下文结构体
+ * @param[out] pIOmap     = 指向IOmap的指针
+ * @param[in]  group      = 要映射的组，0表示所有组
+ * @return IOmap大小
  */
 int ecx_config_map_group(ecx_contextt *context, void *pIOmap, uint8 group)
 {
    return ecx_main_config_map_group(context, pIOmap, group, FALSE);
 }
 
-/** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
-* in sequential order (legacy SOEM way) and force byte alignement.
-*
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入按顺序排列（传统SOEM方式），并强制字节对齐。
  *
- * @param[in]  context    = context struct
- * @param[out] pIOmap     = pointer to IOmap
- * @param[in]  group      = group to map, 0 = all groups
- * @return IOmap size
+ * @param[in]  context    = 上下文结构体
+ * @param[out] pIOmap     = 指向IOmap的指针
+ * @param[in]  group      = 要映射的组，0表示所有组
+ * @return IOmap大小
  */
 int ecx_config_map_group_aligned(ecx_contextt *context, void *pIOmap, uint8 group)
 {
    return ecx_main_config_map_group(context, pIOmap, group, TRUE);
 }
 
-/** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
- * overlapping. NOTE: Must use this for TI ESC when using LRW.
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入重叠。
+ * 注意：使用LRW时必须为TI ESC使用此函数。
  *
- * @param[in]  context    = context struct
- * @param[out] pIOmap     = pointer to IOmap
- * @param[in]  group      = group to map, 0 = all groups
- * @return IOmap size
+ * @param[in]  context    = 上下文结构体
+ * @param[out] pIOmap     = 指向IOmap的指针
+ * @param[in]  group      = 要映射的组，0表示所有组
+ * @return IOmap大小
  */
 int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 group)
 {
@@ -1428,7 +1477,7 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
 
       /* Find mappings and program syncmanagers */
       ecx_config_find_mappings(context, group);
-      
+
       /* do IO mapping of slave and program FMMUs */
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
@@ -1440,8 +1489,8 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
             /* create output mapping */
             if (context->slavelist[slave].Obits)
             {
-               
-               ecx_config_create_output_mappings(context, pIOmap, group, 
+
+               ecx_config_create_output_mappings(context, pIOmap, group,
                   slave, &soLogAddr, &BitPos);
                if (BitPos)
                {
@@ -1453,7 +1502,7 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
             /* create input mapping */
             if (context->slavelist[slave].Ibits)
             {
-               ecx_config_create_input_mappings(context, pIOmap, group, 
+               ecx_config_create_input_mappings(context, pIOmap, group,
                   slave, &siLogAddr, &BitPos);
                if (BitPos)
                {
@@ -1526,7 +1575,7 @@ int ecx_config_overlap_map_group(ecx_contextt *context, void *pIOmap, uint8 grou
       {
          /* store output bytes in master record */
          context->slavelist[0].outputs = pIOmap;
-         context->slavelist[0].Obytes = soLogAddr - context->grouplist[group].logstartaddr; 
+         context->slavelist[0].Obytes = soLogAddr - context->grouplist[group].logstartaddr;
          context->slavelist[0].inputs = (uint8 *)pIOmap + context->slavelist[0].Obytes;
          context->slavelist[0].Ibytes = siLogAddr - context->grouplist[group].logstartaddr;
       }
@@ -1647,7 +1696,7 @@ int ecx_reconfig_slave(ecx_contextt *context, uint16 slave, int timeout)
          if (context->slavelist[slave].PO2SOconfigx) /* only if registered */
          {
             context->slavelist[slave].PO2SOconfigx(context, slave);
-         }         
+         }
          ecx_FPWRw(context->port, configadr, ECT_REG_ALCTL, htoes(EC_STATE_SAFE_OP) , timeout); /* set safeop status */
          state = ecx_statecheck(context, slave, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE); /* check state change safe-op */
          /* program configured FMMU */
@@ -1674,12 +1723,11 @@ int ec_config_init(uint8 usetable)
    return ecx_config_init(&ecx_context, usetable);
 }
 
-/** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
- * in sequential order (legacy SOEM way).
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入按顺序排列（传统SOEM方式）。
  *
- * @param[out] pIOmap     = pointer to IOmap
- * @param[in]  group      = group to map, 0 = all groups
- * @return IOmap size
+ * @param[out] pIOmap     = 指向IOmap的指针
+ * @param[in]  group      = 要映射的组，0表示所有组
+ * @return IOmap大小
  * @see ecx_config_map_group
  */
 int ec_config_map_group(void *pIOmap, uint8 group)
@@ -1687,25 +1735,24 @@ int ec_config_map_group(void *pIOmap, uint8 group)
    return ecx_config_map_group(&ecx_context, pIOmap, group);
 }
 
-/** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
-* overlapping. NOTE: Must use this for TI ESC when using LRW.
-*
-* @param[out] pIOmap     = pointer to IOmap
-* @param[in]  group      = group to map, 0 = all groups
-* @return IOmap size
-* @see ecx_config_overlap_map_group
-*/
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入重叠。
+ * 注意：使用LRW时必须为TI ESC使用此函数。
+ *
+ * @param[out] pIOmap     = 指向IOmap的指针
+ * @param[in]  group      = 要映射的组，0表示所有组
+ * @return IOmap大小
+ * @see ecx_config_overlap_map_group
+ */
 int ec_config_overlap_map_group(void *pIOmap, uint8 group)
 {
    return ecx_config_overlap_map_group(&ecx_context, pIOmap, group);
 }
 
-/** Map all PDOs in one group of slaves to IOmap with Outputs/Inputs
- * in sequential order (legacy SOEM way) and force byte alignment.
+/** 将指定组从站的所有PDO映射到IOmap，输出和输入按顺序排列（传统SOEM方式），并强制字节对齐。
  *
- * @param[out] pIOmap     = pointer to IOmap
- * @param[in]  group      = group to map, 0 = all groups
- * @return IOmap size
+ * @param[out] pIOmap     = 指向IOmap的指针
+ * @param[in]  group      = 要映射的组，0表示所有组
+ * @return IOmap大小
  * @see ecx_config_map_group
  */
 int ec_config_map_group_aligned(void *pIOmap, uint8 group)

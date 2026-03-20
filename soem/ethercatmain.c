@@ -1690,18 +1690,18 @@ static void ecx_clearindex(ecx_contextt *context)  {
 
 }
 
-/** Transmit processdata to slaves.
- * Uses LRW, or LRD/LWR if LRW is not allowed (blockLRW).
- * Both the input and output processdata are transmitted.
- * The outputs with the actual data, the inputs have a placeholder.
- * The inputs are gathered with the receive processdata function.
- * In contrast to the base LRW function this function is non-blocking.
- * If the processdata does not fit in one datagram, multiple are used.
- * In order to recombine the slave response, a stack is used.
- * @param[in]  context        = context struct
- * @param[in]  group          = group number
- * @param[in]  use_overlap_io = flag if overlapped iomap is used
- * @return >0 if processdata is transmitted.
+/** 向从站发送过程数据。
+ * 使用LRW命令，如果LRW不被允许（blockLRW）则使用LRD/LWR。
+ * 输入和输出过程数据都被发送。输出数据为实际数据，输入数据为占位符。
+ * 输入数据通过接收过程数据函数收集。
+ * 与基础LRW函数不同，此函数是非阻塞的。
+ * 如果过程数据无法放入一个数据报中，则使用多个数据报。
+ * 为了重新组合从站响应，使用了一个栈。
+ *
+ * @param[in]  context        = 上下文结构体
+ * @param[in]  group          = 组号
+ * @param[in]  use_overlap_io = 是否使用重叠IO映射的标志
+ * @return >0 表示过程数据已发送
  */
 static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean use_overlap_io)
 {
@@ -1877,48 +1877,50 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
    return wkc;
 }
 
-/** Transmit processdata to slaves.
-* Uses LRW, or LRD/LWR if LRW is not allowed (blockLRW).
-* Both the input and output processdata are transmitted in the overlapped IOmap.
-* The outputs with the actual data, the inputs replace the output data in the
-* returning frame. The inputs are gathered with the receive processdata function.
-* In contrast to the base LRW function this function is non-blocking.
-* If the processdata does not fit in one datagram, multiple are used.
-* In order to recombine the slave response, a stack is used.
-* @param[in]  context        = context struct
-* @param[in]  group          = group number
-* @return >0 if processdata is transmitted.
-*/
+/** 向从站发送过程数据（重叠IO映射版本）。
+ * 使用LRW命令，如果LRW不被允许（blockLRW）则使用LRD/LWR。
+ * 输入和输出过程数据都在重叠的IOmap中发送。
+ * 输出数据为实际数据，输入数据在返回帧中替换输出数据。
+ * 输入数据通过接收过程数据函数收集。
+ * 与基础LRW函数不同，此函数是非阻塞的。
+ * 如果过程数据无法放入一个数据报中，则使用多个数据报。
+ * 为了重新组合从站响应，使用了一个栈。
+ *
+ * @param[in]  context        = 上下文结构体
+ * @param[in]  group          = 组号
+ * @return >0 表示过程数据已发送
+ */
 int ecx_send_overlap_processdata_group(ecx_contextt *context, uint8 group)
 {
    return ecx_main_send_processdata(context, group, TRUE);
 }
 
-/** Transmit processdata to slaves.
-* Uses LRW, or LRD/LWR if LRW is not allowed (blockLRW).
-* Both the input and output processdata are transmitted.
-* The outputs with the actual data, the inputs have a placeholder.
-* The inputs are gathered with the receive processdata function.
-* In contrast to the base LRW function this function is non-blocking.
-* If the processdata does not fit in one datagram, multiple are used.
-* In order to recombine the slave response, a stack is used.
-* @param[in]  context        = context struct
-* @param[in]  group          = group number
-* @return >0 if processdata is transmitted.
-*/
+/** 向从站发送过程数据。
+ * 使用LRW命令，如果LRW不被允许（blockLRW）则使用LRD/LWR。
+ * 输入和输出过程数据都被发送。输出数据为实际数据，输入数据为占位符。
+ * 输入数据通过接收过程数据函数收集。
+ * 与基础LRW函数不同，此函数是非阻塞的。
+ * 如果过程数据无法放入一个数据报中，则使用多个数据报。
+ * 为了重新组合从站响应，使用了一个栈。
+ *
+ * @param[in]  context        = 上下文结构体
+ * @param[in]  group          = 组号
+ * @return >0 表示过程数据已发送
+ */
 int ecx_send_processdata_group(ecx_contextt *context, uint8 group)
 {
    return ecx_main_send_processdata(context, group, FALSE);
 }
 
-/** Receive processdata from slaves.
- * Second part from ec_send_processdata().
- * Received datagrams are recombined with the processdata with help from the stack.
- * If a datagram contains input processdata it copies it to the processdata structure.
- * @param[in]  context        = context struct
- * @param[in]  group          = group number
- * @param[in]  timeout        = Timeout in us.
- * @return Work counter.
+/** 从从站接收过程数据。
+ * ec_send_processdata()的第二部分。
+ * 接收到的数据报借助栈与过程数据重新组合。
+ * 如果数据报包含输入过程数据，则将其复制到过程数据结构中。
+ *
+ * @param[in]  context        = 上下文结构体
+ * @param[in]  group          = 组号
+ * @param[in]  timeout        = 超时时间（微秒）
+ * @return 工作计数器值
  */
 int ecx_receive_processdata_group(ecx_contextt *context, uint8 group, int timeout)
 {
