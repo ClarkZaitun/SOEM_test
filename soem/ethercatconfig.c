@@ -107,38 +107,71 @@ int ec_findconfig( uint32 man, uint32 id)
  */
 void ecx_init_context(ecx_contextt *context)
 {
-   int lp;
+   int lp;  // 循环变量
+
+   // 初始化从站计数为0
    *(context->slavecount) = 0;
-   /* clean ec_slave array */
+
+   /* 清除从站列表数组 */
+   // 将所有从站结构体清零，确保初始状态干净
    memset(context->slavelist, 0x00, sizeof(ec_slavet) * context->maxslave);
+
+   // 清除组列表数组
+   // 将所有组结构体清零，确保初始状态干净
    memset(context->grouplist, 0x00, sizeof(ec_groupt) * context->maxgroup);
-   /* clear slave eeprom cache, does not actually read any eeprom */
+
+   /* 清除从站EEPROM缓存，实际上并不读取任何EEPROM */
+   // 通过访问超出范围的地址来清除缓存，初始化ESI缓存系统
    ecx_siigetbyte(context, 0, EC_MAXEEPBUF);
+
+   // 为每个组设置默认的逻辑起始地址
+   // 使用组索引左移EC_LOGGROUPOFFSET位来计算逻辑起始地址
+   // 这样每个组的逻辑地址空间不会重叠
    for(lp = 0; lp < context->maxgroup; lp++)
    {
-      /* default start address per group entry */
+      /* 每个组条目的默认起始地址 */
       context->grouplist[lp].logstartaddr = lp << EC_LOGGROUPOFFSET;
    }
 }
 
+/**
+ * 检测总线上的从站数量
+ *
+ * 该函数通过广播读取类型寄存器来检测总线上的从站数量。
+ * 主要功能包括：
+ * 1. 对旧版netX100从站进行特殊预初始化
+ * 2. 忽略别名寄存器
+ * 3. 将所有从站重置为INIT状态
+ * 4. 检测从站数量
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @return 成功时返回从站数量，失败时返回错误码
+ */
 int ecx_detect_slaves(ecx_contextt *context)
 {
-   uint8  b;
-   uint16 w;
-   int    wkc;
+   uint8  b;      // 8位临时变量
+   uint16 w;      // 16位临时变量
+   int    wkc;    // 工作计数器
 
-   /* make special pre-init register writes to enable MAC[1] local administered bit *
-    * setting for old netX100 slaves */
+   /* 对旧版netX100从站进行特殊的预初始化寄存器写入 */
+   /* 以启用MAC[1]本地管理位设置 */
    b = 0x00;
-   ecx_BWR(context->port, 0x0000, ECT_REG_DLALIAS, sizeof(b), &b, EC_TIMEOUTRET3);     /* Ignore Alias register */
+   // 忽略别名寄存器
+   ecx_BWR(context->port, 0x0000, ECT_REG_DLALIAS, sizeof(b), &b, EC_TIMEOUTRET3);
+
    w = htoes(EC_STATE_INIT | EC_STATE_ACK);
-   ecx_BWR(context->port, 0x0000, ECT_REG_ALCTL, sizeof(w), &w, EC_TIMEOUTRET3);       /* Reset all slaves to Init */
-   /* netX100 should now be happy */
-   ecx_BWR(context->port, 0x0000, ECT_REG_ALCTL, sizeof(w), &w, EC_TIMEOUTRET3);       /* Reset all slaves to Init */
-   wkc = ecx_BRD(context->port, 0x0000, ECT_REG_TYPE, sizeof(w), &w, EC_TIMEOUTSAFE);  /* detect number of slaves */
+   // 将所有从站重置为INIT状态
+   ecx_BWR(context->port, 0x0000, ECT_REG_ALCTL, sizeof(w), &w, EC_TIMEOUTRET3);
+   /* netX100现在应该可以正常工作了 */
+   // 再次重置所有从站为INIT状态
+   ecx_BWR(context->port, 0x0000, ECT_REG_ALCTL, sizeof(w), &w, EC_TIMEOUTRET3);
+
+   // 检测从站数量（广播读取类型寄存器）
+   wkc = ecx_BRD(context->port, 0x0000, ECT_REG_TYPE, sizeof(w), &w, EC_TIMEOUTSAFE);
+
    if (wkc > 0)
    {
-      /* this is strictly "less than" since the master is "slave 0" */
+      /* 严格使用"小于"，因为主站是"从站0" */
       if (wkc < context->maxslave)
       {
          *(context->slavecount) = wkc;
@@ -153,34 +186,76 @@ int ecx_detect_slaves(ecx_contextt *context)
    return wkc;
 }
 
+/**
+ * 将所有从站设置为默认状态
+ *
+ * 该函数通过广播写入将所有从站的寄存器重置为默认值。
+ * 主要功能包括：
+ * 1. 禁用环路手动控制
+ * 2. 设置IRQ掩码
+ * 3. 重置CRC计数器
+ * 4. 重置FMMU和Sync Manager
+ * 5. 重置DC相关寄存器
+ * 6. 将EEPROM控制权交给主站
+ *
+ * @param[in] context EtherCAT上下文结构体
+ */
 static void ecx_set_slaves_to_default(ecx_contextt *context)
 {
-   uint8 b;
-   uint16 w;
-   uint8 zbuf[64];
+   uint8 b;           // 8位临时变量
+   uint16 w;          // 16位临时变量
+   uint8 zbuf[64];    // 零缓冲区
+
+   // 初始化零缓冲区
    memset(&zbuf, 0x00, sizeof(zbuf));
+
    b = 0x00;
-   ecx_BWR(context->port, 0x0000, ECT_REG_DLPORT      , sizeof(b) , &b, EC_TIMEOUTRET3);     /* deact loop manual */
+   // 禁用环路手动控制
+   ecx_BWR(context->port, 0x0000, ECT_REG_DLPORT      , sizeof(b) , &b, EC_TIMEOUTRET3);
+
    w = htoes(0x0004);
-   ecx_BWR(context->port, 0x0000, ECT_REG_IRQMASK     , sizeof(w) , &w, EC_TIMEOUTRET3);     /* set IRQ mask */
-   ecx_BWR(context->port, 0x0000, ECT_REG_RXERR       , 8         , &zbuf, EC_TIMEOUTRET3);  /* reset CRC counters */
-   ecx_BWR(context->port, 0x0000, ECT_REG_FMMU0       , 16 * 3    , &zbuf, EC_TIMEOUTRET3);  /* reset FMMU's */
-   ecx_BWR(context->port, 0x0000, ECT_REG_SM0         , 8 * 4     , &zbuf, EC_TIMEOUTRET3);  /* reset SyncM */
+   // 设置IRQ掩码
+   ecx_BWR(context->port, 0x0000, ECT_REG_IRQMASK     , sizeof(w) , &w, EC_TIMEOUTRET3);
+
+   // 重置CRC计数器
+   ecx_BWR(context->port, 0x0000, ECT_REG_RXERR       , 8         , &zbuf, EC_TIMEOUTRET3);
+
+   // 重置FMMU（3个FMMU，每个16字节）
+   ecx_BWR(context->port, 0x0000, ECT_REG_FMMU0       , 16 * 3    , &zbuf, EC_TIMEOUTRET3);
+
+   // 重置Sync Manager（4个SM，每个8字节）
+   ecx_BWR(context->port, 0x0000, ECT_REG_SM0         , 8 * 4     , &zbuf, EC_TIMEOUTRET3);
+
    b = 0x00;
-   ecx_BWR(context->port, 0x0000, ECT_REG_DCSYNCACT   , sizeof(b) , &b, EC_TIMEOUTRET3);     /* reset activation register */
-   ecx_BWR(context->port, 0x0000, ECT_REG_DCSYSTIME   , 4         , &zbuf, EC_TIMEOUTRET3);  /* reset system time+ofs */
+   // 重置DC激活寄存器
+   ecx_BWR(context->port, 0x0000, ECT_REG_DCSYNCACT   , sizeof(b) , &b, EC_TIMEOUTRET3);
+
+   // 重置系统时间和偏移
+   ecx_BWR(context->port, 0x0000, ECT_REG_DCSYSTIME   , 4         , &zbuf, EC_TIMEOUTRET3);
+
    w = htoes(0x1000);
-   ecx_BWR(context->port, 0x0000, ECT_REG_DCSPEEDCNT  , sizeof(w) , &w, EC_TIMEOUTRET3);     /* DC speedstart */
+   // DC速度启动
+   ecx_BWR(context->port, 0x0000, ECT_REG_DCSPEEDCNT  , sizeof(w) , &w, EC_TIMEOUTRET3);
+
    w = htoes(0x0c00);
-   ecx_BWR(context->port, 0x0000, ECT_REG_DCTIMEFILT  , sizeof(w) , &w, EC_TIMEOUTRET3);     /* DC filt expr */
+   // DC滤波器表达式
+   ecx_BWR(context->port, 0x0000, ECT_REG_DCTIMEFILT  , sizeof(w) , &w, EC_TIMEOUTRET3);
+
    b = 0x00;
-   ecx_BWR(context->port, 0x0000, ECT_REG_DLALIAS     , sizeof(b) , &b, EC_TIMEOUTRET3);     /* Ignore Alias register */
+   // 忽略别名寄存器
+   ecx_BWR(context->port, 0x0000, ECT_REG_DLALIAS     , sizeof(b) , &b, EC_TIMEOUTRET3);
+
    w = htoes(EC_STATE_INIT | EC_STATE_ACK);
-   ecx_BWR(context->port, 0x0000, ECT_REG_ALCTL       , sizeof(w) , &w, EC_TIMEOUTRET3);     /* Reset all slaves to Init */
+   // 将所有从站重置为INIT状态
+   ecx_BWR(context->port, 0x0000, ECT_REG_ALCTL       , sizeof(w) , &w, EC_TIMEOUTRET3);
+
    b = 2;
-   ecx_BWR(context->port, 0x0000, ECT_REG_EEPCFG      , sizeof(b) , &b, EC_TIMEOUTRET3);     /* force Eeprom from PDI */
+   // 强制EEPROM从PDI读取
+   ecx_BWR(context->port, 0x0000, ECT_REG_EEPCFG      , sizeof(b) , &b, EC_TIMEOUTRET3);
+
    b = 0;
-   ecx_BWR(context->port, 0x0000, ECT_REG_EEPCFG      , sizeof(b) , &b, EC_TIMEOUTRET3);     /* set Eeprom to master */
+   // 将EEPROM控制权交给主站
+   ecx_BWR(context->port, 0x0000, ECT_REG_EEPCFG      , sizeof(b) , &b, EC_TIMEOUTRET3);
 }
 
 #ifdef EC_VER1
@@ -304,104 +379,162 @@ static int ecx_lookup_prev_sii(ecx_contextt *context, uint16 slave)
    return 0;
 }
 
-/** Enumerate and init all slaves.
+/**
+ * 枚举并初始化所有从站
  *
- * @param[in] context      = context struct
- * @param[in] usetable     = TRUE when using configtable to init slaves, FALSE otherwise
- * @return Workcounter of slave discover datagram = number of slaves found
+ * 该函数是EtherCAT配置的核心函数，负责初始化和配置总线上的所有从站。
+ * 主要功能包括：
+ * 1. 初始化EtherCAT上下文
+ * 2. 检测总线上的从站
+ * 3. 读取从站的基本信息（接口类型、节点地址、别名地址等）
+ * 4. 读取从站EEPROM信息（制造商ID、设备ID、版本等）
+ * 5. 配置从站邮箱
+ * 6. 处理从站拓扑结构
+ * 7. 根据配置表或SII信息配置从站
+ * 8. 编程从站Sync Manager
+ * 9. 将从站状态设置为PRE_OP
+ *
+ * @param[in] context    EtherCAT上下文结构体
+ * @param[in] usetable   是否使用配置表初始化从站（TRUE/FALSE）
+ * @return 从站发现数据报的工作计数器，即找到的从站数量
  */
 int ecx_config_init(ecx_contextt *context, uint8 usetable)
 {
-   uint16 slave, ADPh, configadr, ssigen;
-   uint16 topology, estat;
-   int16 topoc, slavec, aliasadr;
-   uint8 b,h;
-   uint8 SMc;
-   uint32 eedat;
-   int wkc, cindex, nSM;
-   uint16 val16;
+   uint16 slave, ADPh, configadr, ssigen;     // 从站索引、地址指针、配置地址、SII通用部分索引
+   uint16 topology, estat;                    // 拓扑结构、EEPROM状态
+   int16 topoc, slavec, aliasadr;             // 拓扑计数、从站计数、别名地址
+   uint8 b,h;                                 // 临时变量
+   uint8 SMc;                                 // Sync Manager计数器
+   uint32 eedat;                              // EEPROM数据
+   int wkc, cindex, nSM;                      // 工作计数器、配置索引、Sync Manager数量
+   uint16 val16;                              // 16位临时变量
 
    EC_PRINT("ec_config_init %d\n", usetable);
-   // 初始化上下文，组
+
+   // 初始化EtherCAT上下文。清除从站列表和组列表，并为每个组设置默认的逻辑起始地址。
    ecx_init_context(context);
+
+   // 检测总线上的从站数量
    wkc = ecx_detect_slaves(context);
+
    if (wkc > 0)
    {
+      // 将所有从站设置为默认值
       ecx_set_slaves_to_default(context);
+
+      // 遍历所有从站，配置基本信息
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
+         // 计算地址指针（AP寻址方式）
          ADPh = (uint16)(1 - slave);
-         val16 = ecx_APRDw(context->port, ADPh, ECT_REG_PDICTL, EC_TIMEOUTRET3); /* read interface type of slave */
+
+         // 读取从站接口类型
+         val16 = ecx_APRDw(context->port, ADPh, ECT_REG_PDICTL, EC_TIMEOUTRET3);
          context->slavelist[slave].Itype = etohs(val16);
-         /* a node offset is used to improve readability of network frames */
-         /* this has no impact on the number of addressable slaves (auto wrap around) */
-         ecx_APWRw(context->port, ADPh, ECT_REG_STADR, htoes(slave + EC_NODEOFFSET) , EC_TIMEOUTRET3); /* set node address of slave */
+
+         /* 使用节点偏移量来提高网络帧的可读性 */
+         /* 这对可寻址从站的数量没有影响（自动环绕） */
+         // 设置从站节点地址
+         ecx_APWRw(context->port, ADPh, ECT_REG_STADR, htoes(slave + EC_NODEOFFSET) , EC_TIMEOUTRET3);
+
+         // 设置非EtherCAT帧的处理方式
          if (slave == 1)
          {
-            b = 1; /* kill non ecat frames for first slave */
+            b = 1; /* 第一个从站丢弃非EtherCAT帧 */
          }
          else
          {
-            b = 0; /* pass all frames for following slaves */
+            b = 0; /* 后续从站传递所有帧 */
          }
-         ecx_APWRw(context->port, ADPh, ECT_REG_DLCTL, htoes(b), EC_TIMEOUTRET3); /* set non ecat frame behaviour */
+         ecx_APWRw(context->port, ADPh, ECT_REG_DLCTL, htoes(b), EC_TIMEOUTRET3);
+
+         // 读取配置地址
          configadr = ecx_APRDw(context->port, ADPh, ECT_REG_STADR, EC_TIMEOUTRET3);
          configadr = etohs(configadr);
          context->slavelist[slave].configadr = configadr;
+
+         // 读取别名地址
          ecx_FPRD(context->port, configadr, ECT_REG_ALIAS, sizeof(aliasadr), &aliasadr, EC_TIMEOUTRET3);
          context->slavelist[slave].aliasadr = etohs(aliasadr);
+
+         // 读取EEPROM状态
          ecx_FPRD(context->port, configadr, ECT_REG_EEPSTAT, sizeof(estat), &estat, EC_TIMEOUTRET3);
          estat = etohs(estat);
-         if (estat & EC_ESTAT_R64) /* check if slave can read 8 byte chunks */
+
+         // 检查从站是否支持8字节块读取
+         if (estat & EC_ESTAT_R64)
          {
             context->slavelist[slave].eep_8byte = 1;
          }
-         ecx_readeeprom1(context, slave, ECT_SII_MANUF); /* Manuf */
+
+         // 准备读取EEPROM制造商信息
+         ecx_readeeprom1(context, slave, ECT_SII_MANUF);
       }
+      // 读取所有从站的制造商ID
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* Manuf */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
          context->slavelist[slave].eep_man = etohl(eedat);
-         ecx_readeeprom1(context, slave, ECT_SII_ID); /* ID */
+         // 准备读取设备ID
+         ecx_readeeprom1(context, slave, ECT_SII_ID);
       }
+
+      // 读取所有从站的设备ID
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* ID */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
          context->slavelist[slave].eep_id = etohl(eedat);
-         ecx_readeeprom1(context, slave, ECT_SII_REV); /* revision */
+         // 准备读取版本信息
+         ecx_readeeprom1(context, slave, ECT_SII_REV);
       }
+
+      // 读取所有从站的版本信息
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* revision */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
          context->slavelist[slave].eep_rev = etohl(eedat);
-         ecx_readeeprom1(context, slave, ECT_SII_RXMBXADR); /* write mailbox address + mailboxsize */
+         // 准备读取邮箱写入地址和大小
+         ecx_readeeprom1(context, slave, ECT_SII_RXMBXADR);
       }
+
+      // 读取所有从站的邮箱写入地址和大小
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
-         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* write mailbox address and mailboxsize */
+         eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
          context->slavelist[slave].mbx_wo = (uint16)LO_WORD(etohl(eedat));
          context->slavelist[slave].mbx_l = (uint16)HI_WORD(etohl(eedat));
+
+         // 如果邮箱大小大于0，准备读取邮箱读取地址
          if (context->slavelist[slave].mbx_l > 0)
          {
-            ecx_readeeprom1(context, slave, ECT_SII_TXMBXADR); /* read mailbox offset */
+            ecx_readeeprom1(context, slave, ECT_SII_TXMBXADR);
          }
       }
+
+      // 读取所有从站的邮箱读取地址和大小
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
          if (context->slavelist[slave].mbx_l > 0)
          {
-            eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP); /* read mailbox offset */
-            context->slavelist[slave].mbx_ro = (uint16)LO_WORD(etohl(eedat)); /* read mailbox offset */
-            context->slavelist[slave].mbx_rl = (uint16)HI_WORD(etohl(eedat)); /*read mailbox length */
+            eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
+            context->slavelist[slave].mbx_ro = (uint16)LO_WORD(etohl(eedat));
+            context->slavelist[slave].mbx_rl = (uint16)HI_WORD(etohl(eedat));
+
+            // 如果读取邮箱长度为0，使用写入邮箱长度
             if (context->slavelist[slave].mbx_rl == 0)
             {
                context->slavelist[slave].mbx_rl = context->slavelist[slave].mbx_l;
             }
+
+            // 准备读取邮箱协议
             ecx_readeeprom1(context, slave, ECT_SII_MBXPROTO);
          }
+         // 读取从站配置地址
          configadr = context->slavelist[slave].configadr;
+
+         // 检查从站是否支持分布式时钟(DC)
          val16 = ecx_FPRDw(context->port, configadr, ECT_REG_ESCSUP, EC_TIMEOUTRET3);
-         if ((etohs(val16) & 0x04) > 0)  /* Support DC? */
+         if ((etohs(val16) & 0x04) > 0)
          {
             context->slavelist[slave].hasdc = TRUE;
          }
@@ -409,31 +542,36 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          {
             context->slavelist[slave].hasdc = FALSE;
          }
-         topology = ecx_FPRDw(context->port, configadr, ECT_REG_DLSTAT, EC_TIMEOUTRET3); /* extract topology from DL status */
+
+         // 从DL状态中提取拓扑结构
+         topology = ecx_FPRDw(context->port, configadr, ECT_REG_DLSTAT, EC_TIMEOUTRET3);
          topology = etohs(topology);
-         h = 0;
-         b = 0;
-         if ((topology & 0x0300) == 0x0200) /* port0 open and communication established */
+         h = 0;  // 活动端口数量
+         b = 0;  // 活动端口掩码
+
+         // 检查各端口状态
+         if ((topology & 0x0300) == 0x0200) /* port0 打开且通信建立 */
          {
             h++;
             b |= 0x01;
          }
-         if ((topology & 0x0c00) == 0x0800) /* port1 open and communication established */
+         if ((topology & 0x0c00) == 0x0800) /* port1 打开且通信建立 */
          {
             h++;
             b |= 0x02;
          }
-         if ((topology & 0x3000) == 0x2000) /* port2 open and communication established */
+         if ((topology & 0x3000) == 0x2000) /* port2 打开且通信建立 */
          {
             h++;
             b |= 0x04;
          }
-         if ((topology & 0xc000) == 0x8000) /* port3 open and communication established */
+         if ((topology & 0xc000) == 0x8000) /* port3 打开且通信建立 */
          {
             h++;
             b |= 0x08;
          }
-         /* ptype = Physical type*/
+
+         /* ptype = 物理类型 */
          val16 = ecx_FPRDw(context->port, configadr, ECT_REG_PORTDES, EC_TIMEOUTRET3);
          context->slavelist[slave].ptype = LO_BYTE(etohs(val16));
          context->slavelist[slave].topology = h;
@@ -443,8 +581,9 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          /* 2=2 links , one before and one after */
          /* 3=3 links , split point              */
          /* 4=4 links , cross point              */
-         /* search for parent */
-         context->slavelist[slave].parent = 0; /* parent is master */
+
+         /* 搜索父从站 */
+         context->slavelist[slave].parent = 0; /* 父从站是主站 */
          if (slave > 1)
          {
             topoc = 0;
@@ -454,18 +593,18 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
                topology = context->slavelist[slavec].topology;
                if (topology == 1)
                {
-                  topoc--; /* endpoint found */
+                  topoc--; /* 找到端点 */
                }
                if (topology == 3)
                {
-                  topoc++; /* split found */
+                  topoc++; /* 找到分支 */
                }
                if (topology == 4)
                {
-                  topoc += 2; /* cross found */
+                  topoc += 2; /* 找到交叉点 */
                }
                if (((topoc >= 0) && (topology > 1)) ||
-                   (slavec == 1)) /* parent found */
+                   (slavec == 1)) /* 找到父从站 */
                {
                   context->slavelist[slave].parent = slavec;
                   slavec = 1;
@@ -474,70 +613,94 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             }
             while (slavec > 0);
          }
-         (void)ecx_statecheck(context, slave, EC_STATE_INIT,  EC_TIMEOUTSTATE); //* check state change Init */
 
-         /* set default mailbox configuration if slave has mailbox */
+         // 检查从站状态是否为INIT
+         (void)ecx_statecheck(context, slave, EC_STATE_INIT,  EC_TIMEOUTSTATE);
+
+         /* 如果从站有邮箱，设置默认邮箱配置 */
          if (context->slavelist[slave].mbx_l>0)
          {
-            context->slavelist[slave].SMtype[0] = 1;
-            context->slavelist[slave].SMtype[1] = 2;
-            context->slavelist[slave].SMtype[2] = 3;
-            context->slavelist[slave].SMtype[3] = 4;
+            // 设置Sync Manager类型
+            context->slavelist[slave].SMtype[0] = 1;  // SM0: 邮箱入
+            context->slavelist[slave].SMtype[1] = 2;  // SM1: 邮箱出
+            context->slavelist[slave].SMtype[2] = 3;  // SM2: 过程数据出
+            context->slavelist[slave].SMtype[3] = 4;  // SM3: 过程数据入
+
+            // 配置SM0（邮箱入）
             context->slavelist[slave].SM[0].StartAddr = htoes(context->slavelist[slave].mbx_wo);
             context->slavelist[slave].SM[0].SMlength = htoes(context->slavelist[slave].mbx_l);
             context->slavelist[slave].SM[0].SMflags = htoel(EC_DEFAULTMBXSM0);
+
+            // 配置SM1（邮箱出）
             context->slavelist[slave].SM[1].StartAddr = htoes(context->slavelist[slave].mbx_ro);
             context->slavelist[slave].SM[1].SMlength = htoes(context->slavelist[slave].mbx_rl);
             context->slavelist[slave].SM[1].SMflags = htoel(EC_DEFAULTMBXSM1);
+
+            // 读取邮箱协议
             eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
             context->slavelist[slave].mbx_proto = (uint16)etohl(eedat);
          }
+
          cindex = 0;
-         /* use configuration table ? */
+         /* 使用配置表？ */
          if (usetable == 1)
          {
             cindex = ecx_config_from_table(context, slave);
          }
-         /* slave not in configuration table, find out via SII */
+
+         /* 从站不在配置表中，通过SII查找信息 */
          if (!cindex && !ecx_lookup_prev_sii(context, slave))
          {
+            // 查找SII通用部分
             ssigen = ecx_siifind(context, slave, ECT_SII_GENERAL);
-            /* SII general section */
+
+            /* SII通用部分 */
             if (ssigen)
             {
+               // 读取CoE、FoE、EoE、SoE详情
                context->slavelist[slave].CoEdetails = ecx_siigetbyte(context, slave, ssigen + 0x07);
                context->slavelist[slave].FoEdetails = ecx_siigetbyte(context, slave, ssigen + 0x08);
                context->slavelist[slave].EoEdetails = ecx_siigetbyte(context, slave, ssigen + 0x09);
                context->slavelist[slave].SoEdetails = ecx_siigetbyte(context, slave, ssigen + 0x0a);
+
+               // 检查是否支持块LRW
                if((ecx_siigetbyte(context, slave, ssigen + 0x0d) & 0x02) > 0)
                {
                   context->slavelist[slave].blockLRW = 1;
                   context->slavelist[0].blockLRW++;
                }
+
+               // 读取E-bus电流
                context->slavelist[slave].Ebuscurrent = ecx_siigetbyte(context, slave, ssigen + 0x0e);
                context->slavelist[slave].Ebuscurrent += ecx_siigetbyte(context, slave, ssigen + 0x0f) << 8;
                context->slavelist[0].Ebuscurrent += context->slavelist[slave].Ebuscurrent;
             }
-            /* SII strings section */
+
+            /* SII字符串部分 */
             if (ecx_siifind(context, slave, ECT_SII_STRING) > 0)
             {
+               // 读取从站名称
                ecx_siistring(context, context->slavelist[slave].name, slave, 1);
             }
-            /* no name for slave found, use constructed name */
+            /* 未找到从站名称，使用构造的名称 */
             else
             {
                sprintf(context->slavelist[slave].name, "? M:%8.8x I:%8.8x",
                        (unsigned int)context->slavelist[slave].eep_man,
                        (unsigned int)context->slavelist[slave].eep_id);
             }
-            /* SII SM section */
+
+            /* SII Sync Manager部分 */
             nSM = ecx_siiSM(context, slave, context->eepSM);
             if (nSM>0)
             {
+               // 配置SM0
                context->slavelist[slave].SM[0].StartAddr = htoes(context->eepSM->PhStart);
                context->slavelist[slave].SM[0].SMlength = htoes(context->eepSM->Plength);
                context->slavelist[slave].SM[0].SMflags =
                   htoel((context->eepSM->Creg) + (context->eepSM->Activate << 16));
+
+               // 配置其他SM
                SMc = 1;
                while ((SMc < EC_MAXSM) &&  ecx_siiSMnext(context, slave, context->eepSM, SMc))
                {
@@ -548,9 +711,11 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
                   SMc++;
                }
             }
-            /* SII FMMU section */
+
+            /* SII FMMU部分 */
             if (ecx_siiFMMU(context, slave, context->eepFMMU))
             {
+               // 配置FMMU功能
                if (context->eepFMMU->FMMU0 !=0xff)
                {
                   context->slavelist[slave].FMMU0func = context->eepFMMU->FMMU0;
@@ -570,40 +735,49 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             }
          }
 
+         // 如果从站有邮箱
          if (context->slavelist[slave].mbx_l > 0)
          {
-            if (context->slavelist[slave].SM[0].StartAddr == 0x0000) /* should never happen */
+            // 检查SM0配置是否正确
+            if (context->slavelist[slave].SM[0].StartAddr == 0x0000) /* 不应该发生 */
             {
                EC_PRINT("Slave %d has no proper mailbox in configuration, try default.\n", slave);
+               // 使用默认配置
                context->slavelist[slave].SM[0].StartAddr = htoes(0x1000);
                context->slavelist[slave].SM[0].SMlength = htoes(0x0080);
                context->slavelist[slave].SM[0].SMflags = htoel(EC_DEFAULTMBXSM0);
                context->slavelist[slave].SMtype[0] = 1;
             }
-            if (context->slavelist[slave].SM[1].StartAddr == 0x0000) /* should never happen */
+
+            // 检查SM1配置是否正确
+            if (context->slavelist[slave].SM[1].StartAddr == 0x0000) /* 不应该发生 */
             {
                EC_PRINT("Slave %d has no proper mailbox out configuration, try default.\n", slave);
+               // 使用默认配置
                context->slavelist[slave].SM[1].StartAddr = htoes(0x1080);
                context->slavelist[slave].SM[1].SMlength = htoes(0x0080);
                context->slavelist[slave].SM[1].SMflags = htoel(EC_DEFAULTMBXSM1);
                context->slavelist[slave].SMtype[1] = 2;
             }
-            /* program SM0 mailbox in and SM1 mailbox out for slave */
-            /* writing both SM in one datagram will solve timing issue in old NETX */
+
+            /* 为从站编程SM0（邮箱入）和SM1（邮箱出） */
+            /* 在一个数据报中写入两个SM可以解决旧版NETX的时序问题 */
             ecx_FPWR(context->port, configadr, ECT_REG_SM0, sizeof(ec_smt) * 2,
                &(context->slavelist[slave].SM[0]), EC_TIMEOUTRET3);
          }
-         /* some slaves need eeprom available to PDI in init->preop transition */
+
+         /* 一些从站在init->preop转换时需要EEPROM对PDI可用 */
          ecx_eeprom2pdi(context, slave);
-         /* User may override automatic state change */
+
+         /* 用户可以覆盖自动状态更改 */
          if (context->manualstatechange == 0)
          {
-            /* request pre_op for slave */
+            /* 请求从站进入pre_op状态 */
             ecx_FPWRw(context->port,
                configadr,
                ECT_REG_ALCTL,
                htoes(EC_STATE_PRE_OP | EC_STATE_ACK),
-               EC_TIMEOUTRET3); /* set preop status */
+               EC_TIMEOUTRET3); /* 设置preop状态 */
          }
       }
    }
@@ -856,39 +1030,60 @@ static int ecx_get_threadcount(void)
  * @param[in] context = 包含从站列表的上下文结构体
  * @param[in] group   = 组号，0表示所有组
  */
+/**
+ * 查找指定组中所有从站的PDO映射
+ *
+ * 该函数负责查找指定组中所有从站的PDO映射信息。
+ * 主要功能包括：
+ * 1. 多线程查找CoE和SoE映射（如果支持）
+ * 2. 查找SII映射
+ * 3. 配置同步管理器(SM)
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] group   组号，0表示所有组
+ */
 static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
 {
-   int thrn, thrc;
-   uint16 slave;
+   int thrn, thrc;       // 线程号、线程计数
+   uint16 slave;         // 从站索引
 
+   // 初始化所有映射线程状态为非运行
    for (thrn = 0; thrn < EC_MAX_MAPT; thrn++)
    {
       ecx_mapt[thrn].running = 0;
    }
-   /* find CoE and SoE mapping of slaves in multiple threads */
+
+   /* 在多线程中查找从站的CoE和SoE映射 */
    for (slave = 1; slave <= *(context->slavecount); slave++)
    {
+      // 检查从站是否属于指定组
       if (!group || (group == context->slavelist[slave].group))
       {
 #if EC_MAX_MAPT > 1
-            /* multi-threaded version */
-            while ((thrn = ecx_find_mapt()) < 0)
-            {
-               osal_usleep(1000);
-            }
-            ecx_mapt[thrn].context = context;
-            ecx_mapt[thrn].slave = slave;
-            ecx_mapt[thrn].thread_n = thrn;
-            ecx_mapt[thrn].running = 1;
-            osal_thread_create(&(ecx_threadh[thrn]), 128000,
-               &ecx_mapper_thread, &(ecx_mapt[thrn]));
+         /* 多线程版本 */
+         // 查找空闲的映射线程
+         while ((thrn = ecx_find_mapt()) < 0)
+         {
+            osal_usleep(1000);
+         }
+
+         // 设置线程参数
+         ecx_mapt[thrn].context = context;
+         ecx_mapt[thrn].slave = slave;
+         ecx_mapt[thrn].thread_n = thrn;
+         ecx_mapt[thrn].running = 1;
+
+         // 创建映射线程
+         osal_thread_create(&(ecx_threadh[thrn]), 128000,
+            &ecx_mapper_thread, &(ecx_mapt[thrn]));
 #else
-            /* serialised version */
-            ecx_map_coe_soe(context, slave, 0);
+         /* 串行版本 */
+         ecx_map_coe_soe(context, slave, 0);
 #endif
       }
    }
-   /* wait for all threads to finish */
+
+   /* 等待所有线程完成 */
    do
    {
       thrc = ecx_get_threadcount();
@@ -897,12 +1092,16 @@ static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
          osal_usleep(1000);
       }
    } while (thrc);
-   /* find SII mapping of slave and program SM */
+
+   /* 查找从站的SII映射并配置SM */
    for (slave = 1; slave <= *(context->slavecount); slave++)
    {
+      // 检查从站是否属于指定组
       if (!group || (group == context->slavelist[slave].group))
       {
+         // 查找SII映射
          ecx_map_sii(context, slave);
+         // 配置同步管理器
          ecx_map_sm(context, slave);
       }
    }
@@ -921,58 +1120,91 @@ static void ecx_config_find_mappings(ecx_contextt *context, uint8 group)
  * @param[in,out] LogAddr  = 指向当前逻辑地址的指针（会被更新）
  * @param[in,out] BitPos   = 指向当前位位置的指针（会被更新）
  */
+/**
+ * 为从站创建输入映射
+ *
+ * 该函数负责为指定从站创建输入PDO映射，配置FMMU（现场总线内存映射单元）。
+ * 主要功能包括：
+ * 1. 查找贡献于输入映射的SM（同步管理器）
+ * 2. 配置FMMU以映射物理地址到逻辑地址
+ * 3. 设置输入指针和起始位
+ * 4. 编程FMMU寄存器
+ *
+ * @param[in] context  EtherCAT上下文结构体
+ * @param[in] pIOmap   指向IOmap缓冲区的指针
+ * @param[in] group    组号
+ * @param[in] slave    从站编号
+ * @param[in,out] LogAddr 逻辑地址指针
+ * @param[in,out] BitPos   位位置指针
+ */
 static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap,
    uint8 group, int16 slave, uint32 * LogAddr, uint8 * BitPos)
 {
-   int BitCount = 0;
-   int FMMUdone = 0;
-   int AddToInputsWKC = 0;
-   uint16 ByteCount = 0;
-   uint16 FMMUsize = 0;
-   uint8 SMc = 0;
-   uint16 EndAddr;
-   uint16 SMlength;
-   uint16 configadr;
-   uint8 FMMUc;
+   int BitCount = 0;          // 位计数器
+   int FMMUdone = 0;          // FMMU完成字节数
+   int AddToInputsWKC = 0;    // 是否添加到输入工作计数器
+   uint16 ByteCount = 0;      // 字节计数器
+   uint16 FMMUsize = 0;       // FMMU大小
+   uint8 SMc = 0;             // SM计数器
+   uint16 EndAddr;            // 结束地址
+   uint16 SMlength;           // SM长度
+   uint16 configadr;          // 配置地址
+   uint8 FMMUc;               // FMMU计数器
 
    EC_PRINT(" =Slave %d, INPUT MAPPING\n", slave);
 
    configadr = context->slavelist[slave].configadr;
    FMMUc = context->slavelist[slave].FMMUunused;
-   if (context->slavelist[slave].Obits) /* find free FMMU */
+
+   // 如果从站有输出，查找空闲的FMMU
+   if (context->slavelist[slave].Obits)
    {
       while (context->slavelist[slave].FMMU[FMMUc].LogStart)
       {
          FMMUc++;
       }
    }
-   /* search for SM that contribute to the input mapping */
+
+   /* 搜索贡献于输入映射的SM */
    while ((SMc < EC_MAXSM) && (FMMUdone < ((context->slavelist[slave].Ibits + 7) / 8)))
    {
       EC_PRINT("    FMMU %d\n", FMMUc);
+
+      // 查找类型为4（输入）的SM
       while ((SMc < (EC_MAXSM - 1)) && (context->slavelist[slave].SMtype[SMc] != 4))
       {
          SMc++;
       }
+
       EC_PRINT("      SM%d\n", SMc);
+
+      // 设置FMMU物理起始地址
       context->slavelist[slave].FMMU[FMMUc].PhysStart =
          context->slavelist[slave].SM[SMc].StartAddr;
+
+      // 获取SM长度
       SMlength = etohs(context->slavelist[slave].SM[SMc].SMlength);
       ByteCount += SMlength;
       BitCount += SMlength * 8;
       EndAddr = etohs(context->slavelist[slave].SM[SMc].StartAddr) + SMlength;
-      while ((BitCount < context->slavelist[slave].Ibits) && (SMc < (EC_MAXSM - 1))) /* more SM for input */
+
+      /* 检查是否有更多SM用于输入 */
+      while ((BitCount < context->slavelist[slave].Ibits) && (SMc < (EC_MAXSM - 1)))
       {
          SMc++;
+
+         // 查找类型为4（输入）的SM
          while ((SMc < (EC_MAXSM - 1)) && (context->slavelist[slave].SMtype[SMc] != 4))
          {
             SMc++;
          }
-         /* if addresses from more SM connect use one FMMU otherwise break up in multiple FMMU */
+
+         /* 如果来自更多SM的地址连接，使用一个FMMU，否则分解为多个FMMU */
          if (etohs(context->slavelist[slave].SM[SMc].StartAddr) > EndAddr)
          {
             break;
          }
+
          EC_PRINT("      SM%d\n", SMc);
          SMlength = etohs(context->slavelist[slave].SM[SMc].SMlength);
          ByteCount += SMlength;
@@ -980,20 +1212,27 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
          EndAddr = etohs(context->slavelist[slave].SM[SMc].StartAddr) + SMlength;
       }
 
-      /* bit oriented slave */
+      /* 面向位的从站 */
       if (!context->slavelist[slave].Ibytes)
       {
+         // 设置逻辑起始地址和位
          context->slavelist[slave].FMMU[FMMUc].LogStart = htoel(*LogAddr);
          context->slavelist[slave].FMMU[FMMUc].LogStartbit = *BitPos;
+
+         // 计算位位置
          *BitPos += context->slavelist[slave].Ibits - 1;
          if (*BitPos > 7)
          {
             *LogAddr += 1;
             *BitPos -= 8;
          }
+
+         // 计算FMMU大小
          FMMUsize = (uint16)(*LogAddr - etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) + 1);
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
          context->slavelist[slave].FMMU[FMMUc].LogEndbit = *BitPos;
+
+         // 更新位位置
          *BitPos += 1;
          if (*BitPos > 7)
          {
@@ -1001,40 +1240,56 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
             *BitPos -= 8;
          }
       }
-      /* byte oriented slave */
+      /* 面向字节的从站 */
       else
       {
+         // 如果位位置不为0，移动到下一个字节
          if (*BitPos)
          {
             *LogAddr += 1;
             *BitPos = 0;
          }
+
+         // 设置逻辑起始地址和位
          context->slavelist[slave].FMMU[FMMUc].LogStart = htoel(*LogAddr);
          context->slavelist[slave].FMMU[FMMUc].LogStartbit = *BitPos;
          *BitPos = 7;
+
+         // 计算FMMU大小
          FMMUsize = ByteCount;
          if ((FMMUsize + FMMUdone)> (int)context->slavelist[slave].Ibytes)
          {
             FMMUsize = (uint16)(context->slavelist[slave].Ibytes - FMMUdone);
          }
+
+         // 更新逻辑地址
          *LogAddr += FMMUsize;
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
          context->slavelist[slave].FMMU[FMMUc].LogEndbit = *BitPos;
          *BitPos = 0;
       }
+
+      // 更新FMMU完成计数
       FMMUdone += FMMUsize;
+
+      // 如果FMMU长度不为0，编程FMMU
       if (context->slavelist[slave].FMMU[FMMUc].LogLength)
       {
+         // 设置FMMU属性
          context->slavelist[slave].FMMU[FMMUc].PhysStartBit = 0;
-         context->slavelist[slave].FMMU[FMMUc].FMMUtype = 1;
-         context->slavelist[slave].FMMU[FMMUc].FMMUactive = 1;
-         /* program FMMU for input */
+         context->slavelist[slave].FMMU[FMMUc].FMMUtype = 1;      // 输入类型
+         context->slavelist[slave].FMMU[FMMUc].FMMUactive = 1;    // 激活FMMU
+
+         /* 编程输入FMMU */
          ecx_FPWR(context->port, configadr, ECT_REG_FMMU0 + (sizeof(ec_fmmut) * FMMUc),
             sizeof(ec_fmmut), &(context->slavelist[slave].FMMU[FMMUc]), EC_TIMEOUTRET3);
-         /* Set flag to add one for an input FMMU,
-            a single ESC can only contribute once */
+
+         /* 设置标志为输入FMMU添加一个工作计数器，
+            单个ESC只能贡献一次 */
          AddToInputsWKC = 1;
       }
+
+      // 设置输入指针
       if (!context->slavelist[slave].inputs)
       {
          if (group)
@@ -1050,17 +1305,24 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
                (uint8 *)(pIOmap) +
                etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
          }
+
+         // 设置输入起始位
          context->slavelist[slave].Istartbit =
             context->slavelist[slave].FMMU[FMMUc].LogStartbit;
+
          EC_PRINT("    Inputs %p startbit %d\n",
             context->slavelist[slave].inputs,
             context->slavelist[slave].Istartbit);
       }
+
+      // 移动到下一个FMMU
       FMMUc++;
    }
+
+   // 更新未使用的FMMU索引
    context->slavelist[slave].FMMUunused = FMMUc;
 
-   /* Add one WKC for an input if flag is true */
+   /* 如果标志为真，为输入添加一个工作计数器 */
    if (AddToInputsWKC)
       context->grouplist[group].inputsWKC++;
 }
@@ -1078,52 +1340,83 @@ static void ecx_config_create_input_mappings(ecx_contextt *context, void *pIOmap
  * @param[in,out] LogAddr  = 指向当前逻辑地址的指针（会被更新）
  * @param[in,out] BitPos   = 指向当前位位置的指针（会被更新）
  */
+/**
+ * 为从站创建输出映射
+ *
+ * 该函数负责为指定从站创建输出PDO映射，配置FMMU（现场总线内存映射单元）。
+ * 主要功能包括：
+ * 1. 查找贡献于输出映射的SM（同步管理器）
+ * 2. 配置FMMU以映射物理地址到逻辑地址
+ * 3. 设置输出指针和起始位
+ * 4. 编程FMMU寄存器
+ *
+ * @param[in] context  EtherCAT上下文结构体
+ * @param[in] pIOmap   指向IOmap缓冲区的指针
+ * @param[in] group    组号
+ * @param[in] slave    从站编号
+ * @param[in,out] LogAddr 逻辑地址指针
+ * @param[in,out] BitPos   位位置指针
+ */
 static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOmap,
    uint8 group, int16 slave, uint32 * LogAddr, uint8 * BitPos)
 {
-   int BitCount = 0;
-   int FMMUdone = 0;
-   int AddToOutputsWKC = 0;
-   uint16 ByteCount = 0;
-   uint16 FMMUsize = 0;
-   uint8 SMc = 0;
-   uint16 EndAddr;
-   uint16 SMlength;
-   uint16 configadr;
-   uint8 FMMUc;
+   int BitCount = 0;          // 位计数器
+   int FMMUdone = 0;          // FMMU完成字节数
+   int AddToOutputsWKC = 0;   // 是否添加到输出工作计数器
+   uint16 ByteCount = 0;      // 字节计数器
+   uint16 FMMUsize = 0;       // FMMU大小
+   uint8 SMc = 0;             // SM计数器
+   uint16 EndAddr;            // 结束地址
+   uint16 SMlength;           // SM长度
+   uint16 configadr;          // 配置地址
+   uint8 FMMUc;               // FMMU计数器
 
    EC_PRINT("  OUTPUT MAPPING\n");
 
+   // 获取未使用的FMMU索引
    FMMUc = context->slavelist[slave].FMMUunused;
    configadr = context->slavelist[slave].configadr;
 
-   /* search for SM that contribute to the output mapping */
+   /* 搜索贡献于输出映射的SM */
    while ((SMc < EC_MAXSM) && (FMMUdone < ((context->slavelist[slave].Obits + 7) / 8)))
    {
       EC_PRINT("    FMMU %d\n", FMMUc);
+
+      // 查找类型为3（输出）的SM
       while ((SMc < (EC_MAXSM - 1)) && (context->slavelist[slave].SMtype[SMc] != 3))
       {
          SMc++;
       }
+
       EC_PRINT("      SM%d\n", SMc);
+
+      // 设置FMMU物理起始地址
       context->slavelist[slave].FMMU[FMMUc].PhysStart =
          context->slavelist[slave].SM[SMc].StartAddr;
+
+      // 获取SM长度
       SMlength = etohs(context->slavelist[slave].SM[SMc].SMlength);
       ByteCount += SMlength;
       BitCount += SMlength * 8;
       EndAddr = etohs(context->slavelist[slave].SM[SMc].StartAddr) + SMlength;
-      while ((BitCount < context->slavelist[slave].Obits) && (SMc < (EC_MAXSM - 1))) /* more SM for output */
+
+      /* 检查是否有更多SM用于输出 */
+      while ((BitCount < context->slavelist[slave].Obits) && (SMc < (EC_MAXSM - 1)))
       {
          SMc++;
+
+         // 查找类型为3（输出）的SM
          while ((SMc < (EC_MAXSM - 1)) && (context->slavelist[slave].SMtype[SMc] != 3))
          {
             SMc++;
          }
-         /* if addresses from more SM connect use one FMMU otherwise break up in multiple FMMU */
+
+         /* 如果来自更多SM的地址连接，使用一个FMMU，否则分解为多个FMMU */
          if (etohs(context->slavelist[slave].SM[SMc].StartAddr) > EndAddr)
          {
             break;
          }
+
          EC_PRINT("      SM%d\n", SMc);
          SMlength = etohs(context->slavelist[slave].SM[SMc].SMlength);
          ByteCount += SMlength;
@@ -1131,20 +1424,27 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
          EndAddr = etohs(context->slavelist[slave].SM[SMc].StartAddr) + SMlength;
       }
 
-      /* bit oriented slave */
+      /* 面向位的从站 */
       if (!context->slavelist[slave].Obytes)
       {
+         // 设置逻辑起始地址和位
          context->slavelist[slave].FMMU[FMMUc].LogStart = htoel(*LogAddr);
          context->slavelist[slave].FMMU[FMMUc].LogStartbit = *BitPos;
+
+         // 计算位位置
          *BitPos += context->slavelist[slave].Obits - 1;
          if (*BitPos > 7)
          {
             *LogAddr += 1;
             *BitPos -= 8;
          }
+
+         // 计算FMMU大小
          FMMUsize = (uint16)(*LogAddr - etohl(context->slavelist[slave].FMMU[FMMUc].LogStart) + 1);
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
          context->slavelist[slave].FMMU[FMMUc].LogEndbit = *BitPos;
+
+         // 更新位位置
          *BitPos += 1;
          if (*BitPos > 7)
          {
@@ -1152,40 +1452,56 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
             *BitPos -= 8;
          }
       }
-      /* byte oriented slave */
+      /* 面向字节的从站 */
       else
       {
+         // 如果位位置不为0，移动到下一个字节
          if (*BitPos)
          {
             *LogAddr += 1;
             *BitPos = 0;
          }
+
+         // 设置逻辑起始地址和位
          context->slavelist[slave].FMMU[FMMUc].LogStart = htoel(*LogAddr);
          context->slavelist[slave].FMMU[FMMUc].LogStartbit = *BitPos;
          *BitPos = 7;
+
+         // 计算FMMU大小
          FMMUsize = ByteCount;
          if ((FMMUsize + FMMUdone)> (int)context->slavelist[slave].Obytes)
          {
             FMMUsize = (uint16)(context->slavelist[slave].Obytes - FMMUdone);
          }
+
+         // 更新逻辑地址
          *LogAddr += FMMUsize;
          context->slavelist[slave].FMMU[FMMUc].LogLength = htoes(FMMUsize);
          context->slavelist[slave].FMMU[FMMUc].LogEndbit = *BitPos;
          *BitPos = 0;
       }
+
+      // 更新FMMU完成计数
       FMMUdone += FMMUsize;
+
+      // 如果FMMU长度不为0，编程FMMU
       if (context->slavelist[slave].FMMU[FMMUc].LogLength)
       {
+         // 设置FMMU属性
          context->slavelist[slave].FMMU[FMMUc].PhysStartBit = 0;
-         context->slavelist[slave].FMMU[FMMUc].FMMUtype = 2;
-         context->slavelist[slave].FMMU[FMMUc].FMMUactive = 1;
-         /* program FMMU for output */
+         context->slavelist[slave].FMMU[FMMUc].FMMUtype = 2;      // 输出类型
+         context->slavelist[slave].FMMU[FMMUc].FMMUactive = 1;    // 激活FMMU
+
+         /* 编程输出FMMU */
          ecx_FPWR(context->port, configadr, ECT_REG_FMMU0 + (sizeof(ec_fmmut) * FMMUc),
             sizeof(ec_fmmut), &(context->slavelist[slave].FMMU[FMMUc]), EC_TIMEOUTRET3);
-         /* Set flag to add one for an output FMMU,
-            a single ESC can only contribute once */
+
+         /* 设置标志为输出FMMU添加一个工作计数器，
+            单个ESC只能贡献一次 */
          AddToOutputsWKC = 1;
       }
+
+      // 设置输出指针
       if (!context->slavelist[slave].outputs)
       {
          if (group)
@@ -1201,17 +1517,25 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
                (uint8 *)(pIOmap) +
                etohl(context->slavelist[slave].FMMU[FMMUc].LogStart);
          }
+
+         // 设置输出起始位
          context->slavelist[slave].Ostartbit =
             context->slavelist[slave].FMMU[FMMUc].LogStartbit;
+
          EC_PRINT("    slave %d Outputs %p startbit %d\n",
             slave,
             context->slavelist[slave].outputs,
             context->slavelist[slave].Ostartbit);
       }
+
+      // 移动到下一个FMMU
       FMMUc++;
    }
+
+   // 更新未使用的FMMU索引
    context->slavelist[slave].FMMUunused = FMMUc;
-   /* Add one WKC for an output if flag is true */
+
+   /* 如果标志为真，为输出添加一个工作计数器 */
    if (AddToOutputsWKC)
       context->grouplist[group].outputsWKC++;
 }
@@ -1230,54 +1554,69 @@ static void ecx_config_create_output_mappings(ecx_contextt *context, void *pIOma
  */
 static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 group, boolean forceByteAlignment)
 {
-   uint16 slave, configadr;
-   uint8 BitPos;
-   uint32 LogAddr = 0;
-   uint32 oLogAddr = 0;
-   uint32 diff;
-   uint16 currentsegment = 0;
-   uint32 segmentsize = 0;
+   uint16 slave, configadr;        // 从站索引、配置地址
+   uint8 BitPos;                   // 位位置（用于位级映射）
+   uint32 LogAddr = 0;             // 逻辑地址（当前映射位置）
+   uint32 oLogAddr = 0;            // 旧的逻辑地址（用于计算差值）
+   uint32 diff;                    // 地址差值
+   uint16 currentsegment = 0;      // 当前IO段索引
+   uint32 segmentsize = 0;         // 当前IO段大小
 
+   // 检查从站数量和组号是否有效
    if ((*(context->slavecount) > 0) && (group < context->maxgroup))
    {
       EC_PRINT("ec_config_map_group IOmap:%p group:%d\n", pIOmap, group);
+
+      // 初始化逻辑地址为组的起始地址
       LogAddr = context->grouplist[group].logstartaddr;
       oLogAddr = LogAddr;
       BitPos = 0;
-      context->grouplist[group].nsegments = 0;
-      context->grouplist[group].outputsWKC = 0;
-      context->grouplist[group].inputsWKC = 0;
 
-      /* Find mappings and program syncmanagers */
+      // 初始化组信息
+      context->grouplist[group].nsegments = 0;      // IO段数量
+      context->grouplist[group].outputsWKC = 0;     // 输出工作计数器
+      context->grouplist[group].inputsWKC = 0;      // 输入工作计数器
+
+      /* 查找PDO映射并配置同步管理器 */
       ecx_config_find_mappings(context, group);
 
-      /* do output mapping of slave and program FMMUs */
+      /* 为所有从站创建输出映射并编程FMMU */
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
          configadr = context->slavelist[slave].configadr;
 
+         // 检查从站是否属于指定组
          if (!group || (group == context->slavelist[slave].group))
          {
-            /* create output mapping */
+            /* 创建输出映射 */
             if (context->slavelist[slave].Obits)
             {
+               // 为从站创建输出映射
                ecx_config_create_output_mappings (context, pIOmap, group, slave, &LogAddr, &BitPos);
 
+               // 如果需要强制字节对齐
                if (forceByteAlignment)
                {
-                  /* Force byte alignment if the output is < 8 bits */
+                  /* 如果输出小于8位，强制字节对齐 */
                   if (BitPos)
                   {
-                     LogAddr++;
-                     BitPos = 0;
+                     LogAddr++;     // 移动到下一个字节
+                     BitPos = 0;    // 重置位位置
                   }
                }
 
+               // 计算地址差值
                diff = LogAddr - oLogAddr;
                oLogAddr = LogAddr;
+
+               // 检查是否需要创建新的IO段
+               // 每个数据报的最大数据量为EC_MAXLRWDATA，减去第一个DC数据报的空间
                if ((segmentsize + diff) > (EC_MAXLRWDATA - EC_FIRSTDCDATAGRAM))
                {
+                  // 保存当前段大小
                   context->grouplist[group].IOsegment[currentsegment] = segmentsize;
+
+                  // 移动到下一个段
                   if (currentsegment < (EC_MAXIOSEGMENTS - 1))
                   {
                      currentsegment++;
@@ -1286,16 +1625,21 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
                }
                else
                {
+                  // 累加段大小
                   segmentsize += diff;
                }
             }
          }
       }
+
+      // 处理最后的位对齐
       if (BitPos)
       {
          LogAddr++;
          oLogAddr = LogAddr;
          BitPos = 0;
+
+         // 检查是否需要创建新的IO段
          if ((segmentsize + 1) > (EC_MAXLRWDATA - EC_FIRSTDCDATAGRAM))
          {
             context->grouplist[group].IOsegment[currentsegment] = segmentsize;
@@ -1310,33 +1654,40 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
             segmentsize += 1;
          }
       }
+
+      // 保存输出映射信息
       context->grouplist[group].outputs = pIOmap;
       context->grouplist[group].Obytes = LogAddr - context->grouplist[group].logstartaddr;
       context->grouplist[group].nsegments = currentsegment + 1;
       context->grouplist[group].Isegment = currentsegment;
       context->grouplist[group].Ioffset = (uint16)segmentsize;
+
+      // 如果是组0，保存到主站记录
       if (!group)
       {
          context->slavelist[0].outputs = pIOmap;
          context->slavelist[0].Obytes = LogAddr -
-            context->grouplist[group].logstartaddr; /* store output bytes in master record */
+            context->grouplist[group].logstartaddr; /* 在主站记录中存储输出字节数 */
       }
 
-      /* do input mapping of slave and program FMMUs */
+      /* 为所有从站创建输入映射并编程FMMU */
       for (slave = 1; slave <= *(context->slavecount); slave++)
       {
          configadr = context->slavelist[slave].configadr;
+
+         // 检查从站是否属于指定组
          if (!group || (group == context->slavelist[slave].group))
          {
-            /* create input mapping */
+            /* 创建输入映射 */
             if (context->slavelist[slave].Ibits)
             {
-
+               // 为从站创建输入映射
                ecx_config_create_input_mappings(context, pIOmap, group, slave, &LogAddr, &BitPos);
 
+               // 如果需要强制字节对齐
                if (forceByteAlignment)
                {
-                  /* Force byte alignment if the input is < 8 bits */
+                  /* 如果输入小于8位，强制字节对齐 */
                   if (BitPos)
                   {
                      LogAddr++;
@@ -1344,8 +1695,11 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
                   }
                }
 
+               // 计算地址差值
                diff = LogAddr - oLogAddr;
                oLogAddr = LogAddr;
+
+               // 检查是否需要创建新的IO段
                if ((segmentsize + diff) > (EC_MAXLRWDATA - EC_FIRSTDCDATAGRAM))
                {
                   context->grouplist[group].IOsegment[currentsegment] = segmentsize;
@@ -1361,29 +1715,39 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
                }
             }
 
-            ecx_eeprom2pdi(context, slave); /* set Eeprom control to PDI */
-            /* User may override automatic state change */
+            // 将EEPROM控制权交给PDI
+            ecx_eeprom2pdi(context, slave);
+
+            /* 用户可以覆盖自动状态更改 */
             if (context->manualstatechange == 0)
             {
-               /* request safe_op for slave */
+               /* 请求从站进入SAFE_OP状态 */
                ecx_FPWRw(context->port,
                   configadr,
                   ECT_REG_ALCTL,
                   htoes(EC_STATE_SAFE_OP),
-                  EC_TIMEOUTRET3); /* set safeop status */
+                  EC_TIMEOUTRET3); /* 设置safeop状态 */
             }
+
+            // 统计块LRW从站数量
             if (context->slavelist[slave].blockLRW)
             {
                context->grouplist[group].blockLRW++;
             }
+
+            // 累加E-bus电流
             context->grouplist[group].Ebuscurrent += context->slavelist[slave].Ebuscurrent;
          }
       }
+
+      // 处理最后的位对齐
       if (BitPos)
       {
          LogAddr++;
          oLogAddr = LogAddr;
          BitPos = 0;
+
+         // 检查是否需要创建新的IO段
          if ((segmentsize + 1) > (EC_MAXLRWDATA - EC_FIRSTDCDATAGRAM))
          {
             context->grouplist[group].IOsegment[currentsegment] = segmentsize;
@@ -1398,22 +1762,29 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
             segmentsize += 1;
          }
       }
+
+      // 保存最后的IO段大小
       context->grouplist[group].IOsegment[currentsegment] = segmentsize;
       context->grouplist[group].nsegments = currentsegment + 1;
+
+      // 设置输入映射指针（在输出数据之后）
       context->grouplist[group].inputs = (uint8 *)(pIOmap) + context->grouplist[group].Obytes;
       context->grouplist[group].Ibytes = LogAddr -
          context->grouplist[group].logstartaddr -
          context->grouplist[group].Obytes;
+
+      // 如果是组0，保存到主站记录
       if (!group)
       {
          context->slavelist[0].inputs = (uint8 *)(pIOmap) + context->slavelist[0].Obytes;
          context->slavelist[0].Ibytes = LogAddr -
             context->grouplist[group].logstartaddr -
-            context->slavelist[0].Obytes; /* store input bytes in master record */
+            context->slavelist[0].Obytes; /* 在主站记录中存储输入字节数 */
       }
 
       EC_PRINT("IOmapSize %d\n", LogAddr - context->grouplist[group].logstartaddr);
 
+      // 返回IOmap总大小
       return (LogAddr - context->grouplist[group].logstartaddr);
    }
 

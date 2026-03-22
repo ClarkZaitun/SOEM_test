@@ -211,12 +211,15 @@ int eeprom_read(int slave, int start, int length)
    {
       aiadr = 1 - slave;
       eepctl = 2;
+      // APWR 0x0500 0x02 强制 PDI releases EEPROM access
       ec_APWR(aiadr, ECT_REG_EEPCFG, sizeof(eepctl), &eepctl , EC_TIMEOUTRET); /* force Eeprom from PDI */
       eepctl = 0;
+      // APWR 0x0500 0x00 设置 EEPROM 为主站
       ec_APWR(aiadr, ECT_REG_EEPCFG, sizeof(eepctl), &eepctl , EC_TIMEOUTRET); /* set Eeprom to master */
 
       estat = 0x0000;
       aiadr = 1 - slave;
+      // APRD 0x0502 0x00 读取 EEPROM 状态
       ec_APRD(aiadr, ECT_REG_EEPSTAT, sizeof(estat), &estat, EC_TIMEOUTRET); /* read eeprom status */
       estat = etohs(estat);
       if (estat & EC_ESTAT_R64)

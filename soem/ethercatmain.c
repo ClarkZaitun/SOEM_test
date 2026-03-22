@@ -29,9 +29,9 @@
 PACKED_BEGIN
 typedef struct PACKED
 {
-   uint16    comm;
-   uint16    addr;
-   uint16    d2;
+   uint16 comm; // EEPROM command
+   uint16 addr; // EEPROM address
+   uint16 d2; // EEPROM 地址后半段？
 } ec_eepromt;
 PACKED_END
 
@@ -323,72 +323,107 @@ void ecx_close(ecx_contextt *context)
    ecx_closenic(context->port);
 };
 
-/** Read one byte from slave EEPROM via cache.
- *  If the cache location is empty then a read request is made to the slave.
- *  Depending on the slave capabilities the request is 4 or 8 bytes.
- *  @param[in] context = context struct
- *  @param[in] slave   = slave number
- *  @param[in] address = eeprom address in bytes (slave uses words)
- *  @return requested byte, if not available then 0xff
+/**
+ * 从从站EEPROM的SII（从站信息接口）中获取一个字节
+ *
+ * 该函数通过缓存从从站EEPROM中读取一个字节的数据。如果缓存位置为空，
+ * 则向从站发送读取请求。根据从站的能力，请求可以是4字节或8字节。
+ * 使用缓存机制可以提高读取效率，避免重复读取相同的数据。
+ *
+ * 主要功能：
+ * 1. 检查请求的字节是否已在缓存中
+ * 2. 如果不在缓存中，从EEPROM读取数据并缓存
+ * 3. 使用位图跟踪缓存中的数据
+ * 4. 支持4字节和8字节EEPROM读取响应
+ *
+ * @param[in] context  EtherCAT上下文结构体
+ * @param[in] slave    从站编号，0表示主站（传入0就是清空缓存）
+ * @param[in] address  EEPROM字节地址（从站使用字地址），传入 EC_MAXEEPBUF 不读取任何数据
+ * @return 请求的字节，如果不可用则返回0xff
  */
 uint8 ecx_siigetbyte(ecx_contextt *context, uint16 slave, uint16 address)
 {
-   uint16 configadr, eadr;
-   uint64 edat64;
-   uint32 edat32;
-   uint16 mapw, mapb;
-   int lp,cnt;
-   uint8 retval;
+   uint16 configadr, eadr;      // 配置地址、EEPROM字地址
+   uint64 edat64;               // 64位EEPROM数据
+   uint32 edat32;               // 32位EEPROM数据
+   uint16 mapw, mapb;           // 位图字索引、位索引
+   int lp,cnt;                  // 循环变量、字节数
+   uint8 retval;                // 返回值
 
+   // 默认返回值为0xff（表示失败）
    retval = 0xff;
-   if (slave != context->esislave) /* not the same slave? */
+
+   // 检查是否是同一个从站
+   if (slave != context->esislave) /* 不是同一个从站？ */
    {
-      memset(context->esimap, 0x00, EC_MAXEEPBITMAP * sizeof(uint32)); /* clear esibuf cache map */
+      // 清除ESI缓存位图
+      memset(context->esimap, 0x00, EC_MAXEEPBITMAP * sizeof(uint32));
       context->esislave = slave;
    }
+
+   // 检查地址是否在有效范围内
    if (address < EC_MAXEEPBUF)
    {
-      mapw = address >> 5;
-      mapb = (uint16)(address - (mapw << 5));
+      // 计算位图位置
+      mapw = address >> 5;                          // 字索引（每32字节一个字）
+      mapb = (uint16)(address - (mapw << 5));       // 位索引（0-31）
+
+      // 检查字节是否已在缓存中
       if (context->esimap[mapw] & (1U << mapb))
       {
-         /* byte is already in buffer */
+         /* 字节已在缓存中 */
          retval = context->esibuf[address];
       }
       else
       {
-         /* byte is not in buffer, put it there */
+         /* 字节不在缓存中，需要读取 */
          configadr = context->slavelist[slave].configadr;
-         ecx_eeprom2master(context, slave); /* set eeprom control to master */
+
+         // 将EEPROM控制权交给主站
+         ecx_eeprom2master(context, slave);
+
+         // 计算EEPROM字地址（字节地址除以2）
          eadr = address >> 1;
+
+         // 从EEPROM读取数据
          edat64 = ecx_readeepromFP (context, configadr, eadr, EC_TIMEOUTEEP);
-         /* 8 byte response */
+
+         /* 8字节响应 */
          if (context->slavelist[slave].eep_8byte)
          {
+            // 存储8字节数据到缓存
             put_unaligned64(edat64, &(context->esibuf[eadr << 1]));
             cnt = 8;
          }
-         /* 4 byte response */
+         /* 4字节响应 */
          else
          {
+            // 存储4字节数据到缓存
             edat32 = (uint32)edat64;
             put_unaligned32(edat32, &(context->esibuf[eadr << 1]));
             cnt = 4;
          }
-         /* find bitmap location */
-         mapw = eadr >> 4;
-         mapb = (uint16)((eadr << 1) - (mapw << 5));
+
+         /* 查找位图位置 */
+         mapw = eadr >> 4;                          // 字索引
+         mapb = (uint16)((eadr << 1) - (mapw << 5)); // 位索引
+
+         // 为每个读取的字节设置位图
          for(lp = 0 ; lp < cnt ; lp++)
          {
-            /* set bitmap for each byte that is read */
+            /* 为每个读取的字节设置位图 */
             context->esimap[mapw] |= (1U << mapb);
             mapb++;
+
+            // 如果位索引超过31，移动到下一个字
             if (mapb > 31)
             {
                mapb = 0;
                mapw++;
             }
          }
+
+         // 从缓存中返回请求的字节
          retval = context->esibuf[address];
       }
    }
@@ -851,55 +886,74 @@ int ecx_writestate(ecx_contextt *context, uint16 slave)
    return ret;
 }
 
-/** Check actual slave state.
- * This is a blocking function.
- * To refresh the state of all slaves ecx_readstate() should be called
- * @warning If this is used for slave 0 (=all slaves), the state of all slaves is read by an bitwise OR operation.
- * The returned value is also the bitwise OR state of all slaves.
- * This has some implications for the BOOT state. The Boot state representation collides with INIT | PRE_OP so this
- * function cannot be used for slave = 0 and reqstate = EC_STATE_BOOT and also, if the returned state is BOOT, some
- * slaves might actually be in INIT and PRE_OP and not in BOOT.
- * @param[in] context     = context struct
- * @param[in] slave       = Slave number, 0 = all slaves (only the "slavelist[0].state" is refreshed)
- * @param[in] reqstate    = Requested state
- * @param[in] timeout     = Timeout value in us
- * @return Requested state, or found state after timeout.
+/**
+ * 检查从站的实际状态
+ *
+ * 这是一个阻塞函数，用于检查从站是否达到请求的状态。
+ * 要刷新所有从站的状态，应该调用ecx_readstate()函数。
+ *
+ * @warning 如果用于从站0（=所有从站），所有从站的状态通过按位OR操作读取。
+ * 返回值也是所有从站状态的按位OR值。
+ * 这对BOOT状态有一些影响。BOOT状态表示与INIT | PRE_OP冲突，
+ * 因此此函数不能用于slave = 0且reqstate = EC_STATE_BOOT的情况。
+ * 同样，如果返回的状态是BOOT，某些从站可能实际上处于INIT和PRE_OP状态，而不是BOOT状态。
+ *
+ * @param[in] context     EtherCAT上下文结构体
+ * @param[in] slave       从站编号，0 = 所有从站（仅刷新"slavelist[0].state"）
+ * @param[in] reqstate    请求的状态
+ * @param[in] timeout     超时值（微秒）
+ * @return 请求的状态，或超时后找到的状态
  */
 uint16 ecx_statecheck(ecx_contextt *context, uint16 slave, uint16 reqstate, int timeout)
 {
-   uint16 configadr, state, rval;
-   ec_alstatust slstat;
-   osal_timert timer;
+   uint16 configadr, state, rval;    // 配置地址、状态、返回值
+   ec_alstatust slstat;              // AL状态结构体
+   osal_timert timer;                // 定时器
 
+   // 检查从站编号是否有效
    if ( slave > *(context->slavecount) )
    {
       return 0;
    }
+
+   // 启动定时器
    osal_timer_start(&timer, timeout);
+
+   // 获取从站配置地址
    configadr = context->slavelist[slave].configadr;
+
+   // 循环检查状态，直到达到请求状态或超时
    do
    {
       if (slave < 1)
       {
+         // 从站0表示所有从站，使用广播读取
          rval = 0;
          ecx_BRD(context->port, 0, ECT_REG_ALSTAT, sizeof(rval), &rval , EC_TIMEOUTRET);
          rval = etohs(rval);
       }
       else
       {
+         // 读取单个从站的状态
          slstat.alstatus = 0;
          slstat.alstatuscode = 0;
          ecx_FPRD(context->port, configadr, ECT_REG_ALSTAT, sizeof(slstat), &slstat, EC_TIMEOUTRET);
          rval = etohs(slstat.alstatus);
          context->slavelist[slave].ALstatuscode = etohs(slstat.alstatuscode);
       }
-      state = rval & 0x000f; /* read slave status */
+
+      // 读取从站状态（低4位）
+      state = rval & 0x000f;
+
+      // 如果状态不匹配，等待1毫秒后重试
       if (state != reqstate)
       {
          osal_usleep(1000);
       }
    }
    while ((state != reqstate) && (osal_timer_is_expired(&timer) == FALSE));
+
+   // 更新从站状态
    context->slavelist[slave].state = rval;
 
    return state;
@@ -1219,32 +1273,47 @@ int ecx_eeprom2master(ecx_contextt *context, uint16 slave)
    return wkc;
 }
 
-/** Set eeprom control to PDI. Only if set to master.
- * @param[in]  context        = context struct
- * @param[in] slave     = Slave number
- * @return >0 if OK
+/**
+ * 将EEPROM控制权设置为PDI
+ *
+ * 该函数将从站的EEPROM控制权从主站转移到PDI（从站控制器）。
+ * 只有当EEPROM当前由主站控制时才执行此操作。
+ * 这是从站在状态转换过程中需要EEPROM访问权限时使用的。
+ *
+ * @param[in] context  EtherCAT上下文结构体
+ * @param[in] slave    从站编号
+ * @return 成功返回大于0的值，失败返回0或负值
  */
 int ecx_eeprom2pdi(ecx_contextt *context, uint16 slave)
 {
-   int wkc = 1, cnt = 0;
-   uint16 configadr;
-   uint8 eepctl;
+   int wkc = 1, cnt = 0;      // 工作计数器、重试计数器
+   uint16 configadr;           // 配置地址
+   uint8 eepctl;               // EEPROM控制寄存器值
 
+   // 检查EEPROM是否当前不由PDI控制
    if ( !context->slavelist[slave].eep_pdi )
    {
+      // 获取从站配置地址
       configadr = context->slavelist[slave].configadr;
+
+      // 设置EEPROM控制寄存器值为1（PDI控制）
       eepctl = 1;
+
+      // 写入EEPROM控制寄存器（带重试）
       do
       {
-         wkc = ecx_FPWR(context->port, configadr, ECT_REG_EEPCFG, sizeof(eepctl), &eepctl , EC_TIMEOUTRET); /* set Eeprom to PDI */
+         wkc = ecx_FPWR(context->port, configadr, ECT_REG_EEPCFG, sizeof(eepctl), &eepctl , EC_TIMEOUTRET);
       }
       while ((wkc <= 0) && (cnt++ < EC_DEFAULTRETRIES));
+
+      // 标记EEPROM现在由PDI控制
       context->slavelist[slave].eep_pdi = 1;
    }
 
    return wkc;
 }
 
+// APRD 0x0502 0x00 读取 EEPROM 状态，确认是否 busy
 uint16 ecx_eeprom_waitnotbusyAP(ecx_contextt *context, uint16 aiadr,uint16 *estat, int timeout)
 {
    int wkc, cnt = 0;
@@ -1259,6 +1328,7 @@ uint16 ecx_eeprom_waitnotbusyAP(ecx_contextt *context, uint16 aiadr,uint16 *esta
          osal_usleep(EC_LOCALDELAY);
       }
       *estat = 0;
+      // APRD 0x0502 0x00 读取 EEPROM 状态，确认是否 busy
       wkc=ecx_APRD(context->port, aiadr, ECT_REG_EEPSTAT, sizeof(*estat), estat, EC_TIMEOUTRET);
       *estat = etohs(*estat);
    }
@@ -1293,6 +1363,7 @@ uint64 ecx_readeepromAP(ecx_contextt *context, uint16 aiadr, uint16 eeproma, int
       if (estat & EC_ESTAT_EMASK) /* error bits are set */
       {
          estat = htoes(EC_ECMD_NOP); /* clear error bits */
+         // APWR 0x0502 0x00 清除错误位
          wkc = ecx_APWR(context->port, aiadr, ECT_REG_EEPCTL, sizeof(estat), &estat, EC_TIMEOUTRET3);
       }
 
@@ -1380,9 +1451,9 @@ int ecx_writeeepromAP(ecx_contextt *context, uint16 aiadr, uint16 eeproma, uint1
          }
          while ((wkc <= 0) && (cnt++ < EC_DEFAULTRETRIES));
 
-         ed.comm = EC_ECMD_WRITE;
-         ed.addr = eeproma;
-         ed.d2   = 0x0000;
+         ed.comm = EC_ECMD_WRITE;  // 设置 EEPROM command 为写入
+         ed.addr = eeproma; // 设置 EEPROM 写入地址
+         ed.d2 = 0x0000; // 设置 EEPROM 地址后半段为 0x0000;
          cnt = 0;
          do
          {
@@ -1415,6 +1486,7 @@ int ecx_writeeepromAP(ecx_contextt *context, uint16 aiadr, uint16 eeproma, uint1
    return rval;
 }
 
+// FPRD 0x0502 0x00 读取 EEPROM 状态，确认是否 busy
 uint16 ecx_eeprom_waitnotbusyFP(ecx_contextt *context, uint16 configadr,uint16 *estat, int timeout)
 {
    int wkc, cnt = 0;
@@ -1583,30 +1655,46 @@ int ecx_writeeepromFP(ecx_contextt *context, uint16 configadr, uint16 eeproma, u
    return rval;
 }
 
-/** Read EEPROM from slave bypassing cache.
- * Parallel read step 1, make request to slave.
- * @param[in] context     = context struct
- * @param[in] slave       = Slave number
- * @param[in] eeproma     = (WORD) Address in the EEPROM
+/**
+ * 从从站读取EEPROM数据（绕过缓存）
+ * 并行读取步骤1：向从站发送读取请求
+ *
+ * 该函数向从站发送EEPROM读取请求，但不等待数据返回。
+ * 这是一个两步读取过程的第一步，用于并行读取多个从站的EEPROM。
+ *
+ * @param[in] context     EtherCAT上下文结构体
+ * @param[in] slave       从站编号
+ * @param[in] eeproma     EEPROM地址（字地址）
  */
 void ecx_readeeprom1(ecx_contextt *context, uint16 slave, uint16 eeproma)
 {
-   uint16 configadr, estat;
-   ec_eepromt ed;
-   int wkc, cnt = 0;
+   uint16 configadr, estat;    // 配置地址、EEPROM状态
+   ec_eepromt ed;              // EEPROM命令数据结构
+   int wkc, cnt = 0;           // 工作计数器、重试计数
 
-   ecx_eeprom2master(context, slave); /* set eeprom control to master */
+   // 将EEPROM控制权交给主站
+   ecx_eeprom2master(context, slave);
+
+   // 获取从站配置地址
    configadr = context->slavelist[slave].configadr;
+
+   // 等待EEPROM不忙
    if (ecx_eeprom_waitnotbusyFP(context, configadr, &estat, EC_TIMEOUTEEP))
    {
-      if (estat & EC_ESTAT_EMASK) /* error bits are set */
+      // 检查错误位是否设置
+      if (estat & EC_ESTAT_EMASK)
       {
-         estat = htoes(EC_ECMD_NOP); /* clear error bits */
+         // 清除错误位
+         estat = htoes(EC_ECMD_NOP);
          wkc = ecx_FPWR(context->port, configadr, ECT_REG_EEPCTL, sizeof(estat), &estat, EC_TIMEOUTRET3);
       }
-      ed.comm = htoes(EC_ECMD_READ);
-      ed.addr = htoes(eeproma);
-      ed.d2   = 0x0000;
+
+      // 设置读取命令
+      ed.comm = htoes(EC_ECMD_READ);   // 读取命令
+      ed.addr = htoes(eeproma);        // EEPROM地址
+      ed.d2   = 0x0000;                // 保留字段
+
+      // 发送读取请求（带重试）
       do
       {
          wkc = ecx_FPWR(context->port, configadr, ECT_REG_EEPCTL, sizeof(ed), &ed, EC_TIMEOUTRET);
@@ -1615,24 +1703,35 @@ void ecx_readeeprom1(ecx_contextt *context, uint16 slave, uint16 eeproma)
    }
 }
 
-/** Read EEPROM from slave bypassing cache.
- * Parallel read step 2, actual read from slave.
- * @param[in]  context        = context struct
- * @param[in] slave       = Slave number
- * @param[in] timeout     = Timeout in us.
- * @return EEPROM data 32bit
+/**
+ * 从从站读取EEPROM数据（绕过缓存）
+ * 并行读取步骤2：实际从从站读取数据
+ *
+ * 该函数从从站读取EEPROM数据，这是两步读取过程的第二步。
+ * 必须在调用ecx_readeeprom1之后调用此函数。
+ *
+ * @param[in] context     EtherCAT上下文结构体
+ * @param[in] slave       从站编号
+ * @param[in] timeout     超时时间（微秒）
+ * @return EEPROM数据（32位）
  */
 uint32 ecx_readeeprom2(ecx_contextt *context, uint16 slave, int timeout)
 {
-   uint16 estat, configadr;
-   uint32 edat;
-   int wkc, cnt = 0;
+   uint16 estat, configadr;    // EEPROM状态、配置地址
+   uint32 edat;                // EEPROM数据
+   int wkc, cnt = 0;           // 工作计数器、重试计数
 
+   // 获取从站配置地址
    configadr = context->slavelist[slave].configadr;
+
+   // 初始化数据
    edat = 0;
    estat = 0x0000;
+
+   // 等待EEPROM不忙
    if (ecx_eeprom_waitnotbusyFP(context, configadr, &estat, timeout))
    {
+      // 读取EEPROM数据（带重试）
       do
       {
           wkc = ecx_FPRD(context->port, configadr, ECT_REG_EEPDAT, sizeof(edat), &edat, EC_TIMEOUTRET);
