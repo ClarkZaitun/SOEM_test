@@ -458,20 +458,24 @@ enum
 /** Ethercat packet type */
 #define ETH_P_ECAT              0x88A4
 
-/** Error types */
+/** 错误类型枚举
+ *
+ * 定义SOEM库中可能出现的各种错误类型。
+ * 这些错误类型用于错误列表（ec_eringt）和错误结构体（ec_errort）。
+ */
 typedef enum
 {
-   EC_ERR_TYPE_SDO_ERROR            = 0,
-   EC_ERR_TYPE_EMERGENCY            = 1,
-   EC_ERR_TYPE_PACKET_ERROR         = 3,
-   EC_ERR_TYPE_SDOINFO_ERROR        = 4,
-   EC_ERR_TYPE_FOE_ERROR            = 5,
-   EC_ERR_TYPE_FOE_BUF2SMALL        = 6,
-   EC_ERR_TYPE_FOE_PACKETNUMBER     = 7,
-   EC_ERR_TYPE_SOE_ERROR            = 8,
-   EC_ERR_TYPE_MBX_ERROR            = 9,
-   EC_ERR_TYPE_FOE_FILE_NOTFOUND    = 10,
-   EC_ERR_TYPE_EOE_INVALID_RX_DATA  = 11
+   EC_ERR_TYPE_SDO_ERROR            = 0,   /**< SDO错误：CoE服务数据对象通信错误 */
+   EC_ERR_TYPE_EMERGENCY            = 1,   /**< 紧急消息：CANopen紧急消息，从站报告设备内部错误 */
+   EC_ERR_TYPE_PACKET_ERROR         = 3,   /**< 数据包错误：EtherCAT数据包通信失败 */
+   EC_ERR_TYPE_SDOINFO_ERROR        = 4,   /**< SDO信息错误：CoE SDO信息服务错误 */
+   EC_ERR_TYPE_FOE_ERROR            = 5,   /**< FoE错误：文件传输协议错误 */
+   EC_ERR_TYPE_FOE_BUF2SMALL        = 6,   /**< FoE缓冲区过小：接收缓冲区不足以容纳FoE数据 */
+   EC_ERR_TYPE_FOE_PACKETNUMBER     = 7,   /**< FoE包序号错误：FoE数据包序号不正确 */
+   EC_ERR_TYPE_SOE_ERROR            = 8,   /**< SoE错误：伺服驱动器配置文件错误 */
+   EC_ERR_TYPE_MBX_ERROR            = 9,   /**< 邮箱错误：邮箱通信错误响应 */
+   EC_ERR_TYPE_FOE_FILE_NOTFOUND    = 10,  /**< FoE文件未找到：请求的文件在从站不存在 */
+   EC_ERR_TYPE_EOE_INVALID_RX_DATA  = 11   /**< EoE无效接收数据：以太网传输协议接收数据无效 */
 } ec_err_type;
 
 /** Struct to retrieve errors. */

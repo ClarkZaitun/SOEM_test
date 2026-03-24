@@ -314,6 +314,7 @@ typedef struct ec_eepromPDO
 } ec_eepromPDOt;
 
 /** mailbox buffer array */
+// 邮箱缓冲区数组，用于存储从站发送的邮箱数据
 typedef uint8 ec_mbxbuft[EC_MAXMBX + 1];
 
 /** standard ethercat mailbox header */

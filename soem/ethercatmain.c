@@ -5,14 +5,22 @@
 
 /**
  * \file
- * \brief
- * Main EtherCAT functions.
+ * \brief EtherCAT主站核心功能模块
  *
- * Initialisation, state set and read, mailbox primitives, EEPROM primitives,
- * SII reading and processdata exchange.
+ * 本文件包含SOEM（Simple Open EtherCAT Master）库的主要功能实现：
  *
- * Defines ec_slave[]. All slave information is put in this structure.
- * Needed for most user interaction with slaves.
+ * - 初始化：网络接口初始化、从站发现和配置
+ * - 状态管理：读取和设置从站AL状态（INIT, PRE_OP, SAFE_OP, OPERATIONAL）
+ * - 邮箱通信：邮箱发送/接收原语，用于CoE、EoE、FoE等协议
+ * - EEPROM操作：SII（从站信息接口）读取和写入
+ * - 过程数据交换：周期性输入/输出数据的发送和接收
+ *
+ * 定义了全局从站数组ec_slave[]，所有从站信息都存储在此结构中。
+ * 这是用户与从站交互的主要接口。
+ *
+ * \note 本文件支持两种API风格：
+ *       - ecx_* 函数：使用显式上下文（ecx_contextt），支持多实例
+ *       - ec_* 函数：使用全局上下文，兼容旧版本（EC_VER1）
  */
 
 #include <stdio.h>
@@ -22,111 +30,144 @@
 #include "ethercat.h"
 
 
-/** delay in us for eeprom ready loop */
+/** EEPROM就绪循环的延迟时间（微秒） */
 #define EC_LOCALDELAY  200
 
-/** record for ethercat eeprom communications */
+/** EtherCAT EEPROM通信记录结构体
+ *
+ * 用于通过ESC（EtherCAT从站控制器）寄存器访问从站EEPROM。
+ * 包含命令、地址和数据字段。
+ */
 PACKED_BEGIN
 typedef struct PACKED
 {
-   uint16 comm; // EEPROM command
-   uint16 addr; // EEPROM address
-   uint16 d2; // EEPROM 地址后半段？
+   uint16 comm;    /**< EEPROM命令：NOP(0x0000), READ(0x0100), WRITE(0x0201), RELOAD(0x0300) */
+   uint16 addr;    /**< EEPROM字地址 */
+   uint16 d2;      /**< 地址扩展/数据字段2 */
 } ec_eepromt;
 PACKED_END
 
-/** mailbox error structure */
+/** 邮箱错误响应结构体
+ *
+ * 当从站无法处理邮箱请求时返回此错误响应。
+ * 邮箱类型字段为0表示这是错误响应。
+ */
 PACKED_BEGIN
 typedef struct PACKED
 {
-   ec_mbxheadert   MbxHeader;
-   uint16          Type;
-   uint16          Detail;
+   ec_mbxheadert   MbxHeader;   /**< 邮箱头部 */
+   uint16          Type;        /**< 错误类型 */
+   uint16          Detail;      /**< 详细错误码 */
 } ec_mbxerrort;
 PACKED_END
 
-/** emergency request structure */
+/** CANopen紧急消息结构体
+ *
+ * 用于报告从站设备内部的错误和异常情况。
+ * 遵循CANopen DS301规范的紧急对象格式。
+ */
 PACKED_BEGIN
 typedef struct PACKED
 {
-   ec_mbxheadert   MbxHeader;
-   uint16          CANOpen;
-   uint16          ErrorCode;
-   uint8           ErrorReg;
-   uint8           bData;
-   uint16          w1,w2;
+   ec_mbxheadert   MbxHeader;    /**< 邮箱头部 */
+   uint16          CANOpen;      /**< CANopen服务类型（高4位）和对象字典索引 */
+   uint16          ErrorCode;    /**< 紧急错误码 */
+   uint8           ErrorReg;     /**< 错误寄存器 */
+   uint8           bData;        /**< 制造商特定错误数据 */
+   uint16          w1,w2;        /**< 附加数据字 */
 } ec_emcyt;
 PACKED_END
 
 #ifdef EC_VER1
-/** Main slave data array.
- *  Each slave found on the network gets its own record.
- *  ec_slave[0] is reserved for the master. Structure gets filled
- *  in by the configuration function ec_config().
+/** 主从站数据数组。
+ *  网络上发现的每个从站都有自己的记录。
+ *  ec_slave[0]保留给主站使用。
+ *  结构由配置函数ec_config()填充。
  */
 ec_slavet               ec_slave[EC_MAXSLAVE];
-/** number of slaves found on the network */
+
+/** 网络上发现的从站数量 */
 int                     ec_slavecount;
-/** slave group structure */
+
+/** 从站分组结构 */
 ec_groupt               ec_group[EC_MAXGROUP];
 
-/** cache for EEPROM read functions */
+/** EEPROM读取功能的缓存 */
 static uint8            ec_esibuf[EC_MAXEEPBUF];
-/** bitmap for filled cache buffer bytes */
+
+/** 已填充缓存字节的位图 */
 static uint32           ec_esimap[EC_MAXEEPBITMAP];
-/** current slave for EEPROM cache buffer */
+
+/** 当前EEPROM缓存对应的从站 */
 static ec_eringt        ec_elist;
+
+/** 索引栈，用于分段过程数据传输 */
 static ec_idxstackT     ec_idxstack;
 
-/** SyncManager Communication Type struct to store data of one slave */
+/** 同步管理器通信类型结构，存储单个从站的数据 */
 static ec_SMcommtypet   ec_SMcommtype[EC_MAX_MAPT];
-/** PDO assign struct to store data of one slave */
+
+/** PDO分配结构，存储单个从站的数据 */
 static ec_PDOassignt    ec_PDOassign[EC_MAX_MAPT];
-/** PDO description struct to store data of one slave */
+
+/** PDO描述结构，存储单个从站的数据 */
 static ec_PDOdesct      ec_PDOdesc[EC_MAX_MAPT];
 
-/** buffer for EEPROM SM data */
+/** EEPROM SM数据缓冲区 */
 static ec_eepromSMt     ec_SM;
-/** buffer for EEPROM FMMU data */
+
+/** EEPROM FMMU数据缓冲区 */
 static ec_eepromFMMUt   ec_FMMU;
-/** Global variable TRUE if error available in error stack */
+
+/** 全局变量，错误栈中有错误时为TRUE */
 boolean                 EcatError = FALSE;
 
-// 参考时钟上一次时间 ns
+/** 参考时钟上一次时间（纳秒） */
 int64                   ec_DCtime;
 
+/** 主站端口数据结构 */
 ecx_portt               ecx_port;
+
+/** 冗余端口数据结构 */
 ecx_redportt            ecx_redport;
 
+/** 全局EtherCAT上下文结构
+ *
+ * 初始化为使用上述定义的全局变量。
+ * 这是ec_*函数使用的默认上下文。
+ */
 ecx_contextt  ecx_context = {
-    &ecx_port,          // .port          =
-    &ec_slave[0],       // .slavelist     =
-    &ec_slavecount,     // .slavecount    =
-    EC_MAXSLAVE,        // .maxslave      =
-    &ec_group[0],       // .grouplist     =
-    EC_MAXGROUP,        // .maxgroup      =
-    &ec_esibuf[0],      // .esibuf        =
-    &ec_esimap[0],      // .esimap        =
-    0,                  // .esislave      =
-    &ec_elist,          // .elist         =
-    &ec_idxstack,       // .idxstack      =
-    &EcatError,         // .ecaterror     =
-    &ec_DCtime,         // .DCtime        =
-    &ec_SMcommtype[0],  // .SMcommtype    =
-    &ec_PDOassign[0],   // .PDOassign     =
-    &ec_PDOdesc[0],     // .PDOdesc       =
-    &ec_SM,             // .eepSM         =
-    &ec_FMMU,           // .eepFMMU       =
-    NULL,               // .FOEhook()
-    NULL,               // .EOEhook()
-    0,                  // .manualstatechange
-    NULL,               // .userdata
+    &ecx_port,          /* .port          = 端口结构指针 */
+    &ec_slave[0],       /* .slavelist     = 从站列表 */
+    &ec_slavecount,     /* .slavecount    = 从站数量指针 */
+    EC_MAXSLAVE,        /* .maxslave      = 最大从站数 */
+    &ec_group[0],       /* .grouplist     = 组列表 */
+    EC_MAXGROUP,        /* .maxgroup      = 最大组数 */
+    &ec_esibuf[0],      /* .esibuf        = EEPROM缓存 */
+    &ec_esimap[0],      /* .esimap        = EEPROM位图 */
+    0,                  /* .esislave      = 当前EEPROM从站 */
+    &ec_elist,          /* .elist         = 错误列表 */
+    &ec_idxstack,       /* .idxstack      = 索引栈 */
+    &EcatError,         /* .ecaterror     = 错误标志 */
+    &ec_DCtime,         /* .DCtime        = 分布时钟时间 */
+    &ec_SMcommtype[0],  /* .SMcommtype    = SM通信类型 */
+    &ec_PDOassign[0],   /* .PDOassign     = PDO分配 */
+    &ec_PDOdesc[0],     /* .PDOdesc       = PDO描述 */
+    &ec_SM,             /* .eepSM         = EEPROM SM缓冲区 */
+    &ec_FMMU,           /* .eepFMMU       = EEPROM FMMU缓冲区 */
+    NULL,               /* .FOEhook()     = FoE钩子函数 */
+    NULL,               /* .EOEhook()     = EoE钩子函数 */
+    0,                  /* .manualstatechange = 手动状态改变标志 */
+    NULL,               /* .userdata      = 用户数据指针 */
 };
 #endif
 
-/** Create list over available network adapters.
+/** 创建可用网络适配器列表。
  *
- * @return First element in list over available network adapters.
+ * 查询系统上所有可用的网络适配器，返回链表头指针。
+ * 用于选择用于EtherCAT通信的网络接口。
+ *
+ * @return 可用网络适配器列表的第一个元素
  */
 ec_adaptert * ec_find_adapters (void)
 {
@@ -137,29 +178,39 @@ ec_adaptert * ec_find_adapters (void)
    return ret_adapter;
 }
 
-/** Free dynamically allocated list over available network adapters.
+/** 释放动态分配的网络适配器列表。
  *
- * @param[in] adapter = Struct holding adapter name, description and pointer to next.
+ * 释放由ec_find_adapters()分配的内存。
+ *
+ * @param[in] adapter = 包含适配器名称、描述和指向下一个元素的指针的结构体
  */
 void ec_free_adapters (ec_adaptert * adapter)
 {
    oshw_free_adapters (adapter);
 }
 
-/** Pushes an error on the error list.
+/** 将错误压入错误列表。
  *
- * @param[in] context        = context struct
- * @param[in] Ec pointer describing the error.
+ * 将错误信息添加到环形错误缓冲区中。
+ * 如果缓冲区已满，最旧的错误将被覆盖。
+ *
+ * @param[in] context = 上下文结构体
+ * @param[in] Ec      = 描述错误的错误结构体指针
  */
 void ecx_pusherror(ecx_contextt *context, const ec_errort *Ec)
 {
+   /* 将错误结构体复制到错误列表头部位置 */
    context->elist->Error[context->elist->head] = *Ec;
    context->elist->Error[context->elist->head].Signal = TRUE;
+
+   /* 更新头部指针（环形缓冲区） */
    context->elist->head++;
    if (context->elist->head > EC_MAXELIST)
    {
       context->elist->head = 0;
    }
+
+   /* 如果缓冲区已满，移动尾部指针 */
    if (context->elist->head == context->elist->tail)
    {
       context->elist->tail++;
@@ -168,23 +219,31 @@ void ecx_pusherror(ecx_contextt *context, const ec_errort *Ec)
    {
       context->elist->tail = 0;
    }
+
+   /* 设置全局错误标志 */
    *(context->ecaterror) = TRUE;
 }
 
-/** Pops an error from the list.
+/** 从错误列表中弹出一个错误。
  *
- * @param[in] context        = context struct
- * @param[out] Ec = Struct describing the error.
- * @return TRUE if an error was popped.
+ * 从错误列表的尾部取出一个错误。错误列表是一个环形缓冲区。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[out] Ec      = 描述错误的结构体
+ * @return TRUE: 成功弹出一个错误；FALSE: 错误列表为空
  */
 boolean ecx_poperror(ecx_contextt *context, ec_errort *Ec)
 {
+   /* 检查错误列表是否非空 */
    boolean notEmpty = (context->elist->head != context->elist->tail);
 
+   /* 复制错误结构体 */
    *Ec = context->elist->Error[context->elist->tail];
    context->elist->Error[context->elist->tail].Signal = FALSE;
+
    if (notEmpty)
    {
+      /* 更新尾部指针（环形缓冲区） */
       context->elist->tail++;
       if (context->elist->tail > EC_MAXELIST)
       {
@@ -193,28 +252,31 @@ boolean ecx_poperror(ecx_contextt *context, ec_errort *Ec)
    }
    else
    {
+      /* 列表为空，清除错误标志 */
       *(context->ecaterror) = FALSE;
    }
    return notEmpty;
 }
 
-/** Check if error list has entries.
+/** 检查错误列表是否有条目。
  *
- * @param[in] context        = context struct
- * @return TRUE if error list contains entries.
+ * @param[in] context = 上下文结构体
+ * @return TRUE: 错误列表有条目；FALSE: 错误列表为空
  */
 boolean ecx_iserror(ecx_contextt *context)
 {
    return (context->elist->head != context->elist->tail);
 }
 
-/** Report packet error
+/** 报告数据包错误。
  *
- * @param[in]  context        = context struct
- * @param[in]  Slave      = Slave number
- * @param[in]  Index      = Index that generated error
- * @param[in]  SubIdx     = Subindex that generated error
- * @param[in]  ErrorCode  = Error code
+ * 当EtherCAT数据包通信失败时调用此函数记录错误。
+ *
+ * @param[in]  context   = 上下文结构体
+ * @param[in]  Slave     = 从站号
+ * @param[in]  Index     = 产生错误的索引
+ * @param[in]  SubIdx    = 产生错误的子索引
+ * @param[in]  ErrorCode = 错误码
  */
 void ecx_packeterror(ecx_contextt *context, uint16 Slave, uint16 Index, uint8 SubIdx, uint16 ErrorCode)
 {
@@ -231,11 +293,13 @@ void ecx_packeterror(ecx_contextt *context, uint16 Slave, uint16 Index, uint8 Su
    ecx_pusherror(context, &Ec);
 }
 
-/** Report Mailbox Error
+/** 报告邮箱错误。
  *
- * @param[in]  context        = context struct
- * @param[in]  Slave        = Slave number
- * @param[in]  Detail       = Following EtherCAT specification
+ * 当从站返回邮箱错误响应时调用此函数记录错误。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  Slave   = 从站号
+ * @param[in]  Detail  = 详细错误码（遵循EtherCAT规范）
  */
 static void ecx_mbxerror(ecx_contextt *context, uint16 Slave,uint16 Detail)
 {
@@ -251,15 +315,18 @@ static void ecx_mbxerror(ecx_contextt *context, uint16 Slave,uint16 Detail)
    ecx_pusherror(context, &Ec);
 }
 
-/** Report Mailbox Emergency Error
+/** 报告邮箱紧急错误。
  *
- * @param[in]  context        = context struct
- * @param[in]  Slave      = Slave number
- * @param[in]  ErrorCode  = Following EtherCAT specification
- * @param[in]  ErrorReg
- * @param[in]  b1
- * @param[in]  w1
- * @param[in]  w2
+ * 当从站发送CANopen紧急消息时调用此函数记录错误。
+ * 紧急消息用于报告设备内部的错误和异常情况。
+ *
+ * @param[in]  context    = 上下文结构体
+ * @param[in]  Slave      = 从站号
+ * @param[in]  ErrorCode  = 紧急错误码（遵循EtherCAT/CANopen规范）
+ * @param[in]  ErrorReg   = 错误寄存器
+ * @param[in]  b1         = 制造商特定错误数据
+ * @param[in]  w1        = 附加数据字1
+ * @param[in]  w2        = 附加数据字2
  */
 static void ecx_mbxemergencyerror(ecx_contextt *context, uint16 Slave,uint16 ErrorCode,uint16 ErrorReg,
     uint8 b1, uint16 w1, uint16 w2)
@@ -280,32 +347,46 @@ static void ecx_mbxemergencyerror(ecx_contextt *context, uint16 Slave,uint16 Err
    ecx_pusherror(context, &Ec);
 }
 
-/** Initialise lib in single NIC mode
- * @param[in]  context = context struct
- * @param[in] ifname   = Dev name, f.e. "eth0"
- * @return >0 if OK
+/** 初始化库（单网卡模式）。
+ *
+ * 初始化SOEM库，使用单个网络接口进行EtherCAT通信。
+ * 这是推荐的初始化方式，适用于大多数应用场景。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  ifname  = 网络接口名称，例如 "eth0"
+ * @return >0: 成功；<=0: 失败
  */
 int ecx_init(ecx_contextt *context, const char * ifname)
 {
    return ecx_setupnic(context->port, ifname, FALSE);
 }
 
-/** Initialise lib in redundant NIC mode
- * @param[in]  context  = context struct
- * @param[in]  redport  = pointer to redport, redundant port data
- * @param[in]  ifname   = Primary Dev name, f.e. "eth0"
- * @param[in]  if2name  = Secondary Dev name, f.e. "eth1"
- * @return >0 if OK
+/** 初始化库（冗余网卡模式）。
+ *
+ * 初始化SOEM库，使用两个网络接口进行冗余EtherCAT通信。
+ * 冗余模式可以在一个网络接口故障时保持通信。
+ *
+ * @param[in]  context  = 上下文结构体
+ * @param[in]  redport  = 冗余端口数据结构指针
+ * @param[in]  ifname   = 主网卡名称，例如 "eth0"
+ * @param[in]  if2name  = 备用网卡名称，例如 "eth1"
+ * @return >0: 成功；<=0: 失败
  */
 int ecx_init_redundant(ecx_contextt *context, ecx_redportt *redport, const char *ifname, char *if2name)
 {
    int rval, zbuf;
    ec_etherheadert *ehp;
 
+   /* 设置冗余端口指针 */
    context->port->redport = redport;
+
+   /* 初始化主网卡 */
    ecx_setupnic(context->port, ifname, FALSE);
+
+   /* 初始化备用网卡 */
    rval = ecx_setupnic(context->port, if2name, TRUE);
-   /* prepare "dummy" BRD tx frame for redundant operation */
+
+   /* 准备冗余操作用的"dummy" BRD发送帧 */
    ehp = (ec_etherheadert *)&(context->port->txbuf2);
    ehp->sa1 = oshw_htons(secMAC[0]);
    zbuf = 0;
@@ -315,8 +396,11 @@ int ecx_init_redundant(ecx_contextt *context, ecx_redportt *redport, const char 
    return rval;
 }
 
-/** Close lib.
- * @param[in]  context        = context struct
+/** 关闭库。
+ *
+ * 释放网络接口资源，关闭EtherCAT通信。
+ *
+ * @param[in]  context = 上下文结构体
  */
 void ecx_close(ecx_contextt *context)
 {
@@ -431,11 +515,22 @@ uint8 ecx_siigetbyte(ecx_contextt *context, uint16 slave, uint16 address)
    return retval;
 }
 
-/** Find SII section header in slave EEPROM.
- *  @param[in]  context        = context struct
- *  @param[in] slave   = slave number
- *  @param[in] cat     = section category
- *  @return byte address of section at section length entry, if not available then 0
+/** 在从站EEPROM中查找SII段头部。
+ *
+ * SII（从站信息接口）数据按段组织，每个段有一个类别标识。
+ * 此函数遍历SII数据查找指定类别的段。
+ *
+ * SII段类别包括：
+ * - ECT_SII_STRING (10): 字符串段
+ * - ECT_SII_GENERAL (30): 常规信息段
+ * - ECT_SII_FMMU (40): FMMU配置段
+ * - ECT_SII_SM (41): 同步管理器配置段
+ * - ECT_SII_PDO (50/51): PDO配置段
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  slave   = 从站号
+ * @param[in]  cat     = 要查找的段类别
+ * @return 段长度条目处的字节地址，如果不可用则返回0
  */
 int16 ecx_siifind(ecx_contextt *context, uint16 slave, uint16 cat)
 {
@@ -443,29 +538,37 @@ int16 ecx_siifind(ecx_contextt *context, uint16 slave, uint16 cat)
    uint16 p;
    uint8 eectl = context->slavelist[slave].eep_pdi;
 
+   /* 从SII起始地址开始 */
    a = ECT_SII_START << 1;
-   /* read first SII section category */
+
+   /* 读取第一个SII段类别 */
    p = ecx_siigetbyte(context, slave, a++);
    p += (ecx_siigetbyte(context, slave, a++) << 8);
-   /* traverse SII while category is not found and not EOF */
+
+   /* 遍历SII直到找到目标类别或到达EOF */
    while ((p != cat) && (p != 0xffff))
    {
-      /* read section length */
+      /* 读取段长度 */
       p = ecx_siigetbyte(context, slave, a++);
       p += (ecx_siigetbyte(context, slave, a++) << 8);
-      /* locate next section category */
+
+      /* 定位下一个段类别 */
       a += p << 1;
-      /* read section category */
+
+      /* 读取段类别 */
       p = ecx_siigetbyte(context, slave, a++);
       p += (ecx_siigetbyte(context, slave, a++) << 8);
    }
+
    if (p != cat)
    {
       a = 0;
    }
+
+   /* 如果EEPROM之前由PDI控制，恢复控制权 */
    if (eectl)
    {
-      ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */
+      ecx_eeprom2pdi(context, slave);
    }
 
    return a;
@@ -500,27 +603,31 @@ void ecx_siistring(ecx_contextt *context, char *str, uint16 slave, uint16 Sn)
    uint8 eectl = context->slavelist[slave].eep_pdi;  // 保存EEPROM控制状态
 
    ptr = str;
-   a = ecx_siifind (context, slave, ECT_SII_STRING); /* find string section */
+
+   /* 查找字符串段 */
+   a = ecx_siifind (context, slave, ECT_SII_STRING);
+
    if (a > 0)
    {
-      ba = a + 2; /* skip SII section header */
-      n = ecx_siigetbyte(context, slave, ba++); /* read number of strings in section */
-      if (Sn <= n) /* is req string available? */
+      ba = a + 2; /* 跳过SII段头部 */
+      n = ecx_siigetbyte(context, slave, ba++); /* 读取段中的字符串数量 */
+
+      if (Sn <= n) /* 请求的字符串是否存在？ */
       {
          // 遍历字符串，找到请求的字符串编号
          for (i = 1; i <= Sn; i++) /* walk through strings */
          {
-            l = ecx_siigetbyte(context, slave, ba++); /* length of this string */
+            l = ecx_siigetbyte(context, slave, ba++); /* 此字符串的长度 */
             // 如果不是请求的字符串，跳过
             if (i < Sn)
             {
-               ba += l;
+               ba += l;  /* 跳过非目标字符串 */
             }
             else
             {
                // 找到请求的字符串，复制内容
                ptr = str;
-               for (j = 1; j <= l; j++) /* copy one string */
+               for (j = 1; j <= l; j++) /* 复制一个字符串 */
                {
                   // 限制字符串长度不超过EC_MAXNAME
                   if(j <= EC_MAXNAME)
@@ -535,46 +642,57 @@ void ecx_siistring(ecx_contextt *context, char *str, uint16 slave, uint16 Sn)
                }
             }
          }
-         *ptr = 0; /* add zero terminator */
+         *ptr = 0; /* 添加零终止符 */
       }
       else
       {
          // 请求的字符串编号超出范围，返回空字符串
          ptr = str;
-         *ptr = 0; /* empty string */
+         *ptr = 0; /* 空字符串 */
       }
    }
-   // 恢复EEPROM控制状态
+
+   /* 如果EEPROM之前由PDI控制，恢复控制权 */
    if (eectl)
    {
-      ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */
+      ecx_eeprom2pdi(context, slave);
    }
 }
 
-/** Get FMMU data from SII FMMU section in slave EEPROM.
- *  @param[in]  context = context struct
- *  @param[in]  slave   = slave number
- *  @param[out] FMMU    = FMMU struct from SII, max. 4 FMMU's
- *  @return number of FMMU's defined in section
+/** 从从站EEPROM的SII FMMU段获取FMMU数据。
+ *
+ * FMMU（现场总线内存管理单元）用于将逻辑地址映射到物理地址。
+ * 最多支持4个FMMU。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  slave   = 从站号
+ * @param[out] FMMU    = 从SII获取的FMMU结构体，最多4个FMMU
+ * @return 段中定义的FMMU数量
  */
 uint16 ecx_siiFMMU(ecx_contextt *context, uint16 slave, ec_eepromFMMUt* FMMU)
 {
    uint16  a;
    uint8 eectl = context->slavelist[slave].eep_pdi;
 
+   /* 初始化FMMU结构体 */
    FMMU->nFMMU = 0;
    FMMU->FMMU0 = 0;
    FMMU->FMMU1 = 0;
    FMMU->FMMU2 = 0;
    FMMU->FMMU3 = 0;
+
+   /* 查找FMMU段 */
    FMMU->Startpos = ecx_siifind(context, slave, ECT_SII_FMMU);
 
    if (FMMU->Startpos > 0)
    {
       a = FMMU->Startpos;
+      /* 读取FMMU数量（字数，需要除以2得到实际FMMU数） */
       FMMU->nFMMU = ecx_siigetbyte(context, slave, a++);
       FMMU->nFMMU += (ecx_siigetbyte(context, slave, a++) << 8);
       FMMU->nFMMU *= 2;
+
+      /* 读取每个FMMU的使用标志 */
       FMMU->FMMU0 = ecx_siigetbyte(context, slave, a++);
       FMMU->FMMU1 = ecx_siigetbyte(context, slave, a++);
       if (FMMU->nFMMU > 2)
@@ -583,19 +701,25 @@ uint16 ecx_siiFMMU(ecx_contextt *context, uint16 slave, ec_eepromFMMUt* FMMU)
          FMMU->FMMU3 = ecx_siigetbyte(context, slave, a++);
       }
    }
+
+   /* 如果EEPROM之前由PDI控制，恢复控制权 */
    if (eectl)
    {
-      ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */
+      ecx_eeprom2pdi(context, slave);
    }
 
    return FMMU->nFMMU;
 }
 
-/** Get SM data from SII SM section in slave EEPROM.
- *  @param[in]  context = context struct
- *  @param[in]  slave   = slave number
- *  @param[out] SM      = first SM struct from SII
- *  @return number of SM's defined in section
+/** 从从站EEPROM的SII SM段获取同步管理器数据。
+ *
+ * 同步管理器（SM）用于控制从站内存的访问方式。
+ * SM配置包括物理起始地址、长度、控制寄存器等。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  slave   = 从站号
+ * @param[out] SM      = 从SII获取的第一个SM结构体
+ * @return 段中定义的SM数量
  */
 uint16 ecx_siiSM(ecx_contextt *context, uint16 slave, ec_eepromSMt* SM)
 {
@@ -603,13 +727,20 @@ uint16 ecx_siiSM(ecx_contextt *context, uint16 slave, ec_eepromSMt* SM)
    uint8 eectl = context->slavelist[slave].eep_pdi;
 
    SM->nSM = 0;
+
+   /* 查找SM段 */
    SM->Startpos = ecx_siifind(context, slave, ECT_SII_SM);
+
    if (SM->Startpos > 0)
    {
       a = SM->Startpos;
+
+      /* 读取段长度并计算SM数量（每个SM占4字） */
       w = ecx_siigetbyte(context, slave, a++);
       w += (ecx_siigetbyte(context, slave, a++) << 8);
       SM->nSM = (uint8)(w / 4);
+
+      /* 读取第一个SM的配置 */
       SM->PhStart = ecx_siigetbyte(context, slave, a++);
       SM->PhStart += (ecx_siigetbyte(context, slave, a++) << 8);
       SM->Plength = ecx_siigetbyte(context, slave, a++);
@@ -619,20 +750,25 @@ uint16 ecx_siiSM(ecx_contextt *context, uint16 slave, ec_eepromSMt* SM)
       SM->Activate = ecx_siigetbyte(context, slave, a++);
       SM->PDIctrl = ecx_siigetbyte(context, slave, a++);
    }
+
+   /* 如果EEPROM之前由PDI控制，恢复控制权 */
    if (eectl)
    {
-      ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */
+      ecx_eeprom2pdi(context, slave);
    }
 
    return SM->nSM;
 }
 
-/** Get next SM data from SII SM section in slave EEPROM.
- *  @param[in]  context = context struct
- *  @param[in]  slave   = slave number
- *  @param[out] SM      = first SM struct from SII
- *  @param[in]  n       = SM number
- *  @return >0 if OK
+/** 从从站EEPROM的SII SM段获取下一个SM数据。
+ *
+ * 用于遍历所有SM配置，每次调用获取一个SM。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  slave   = 从站号
+ * @param[out] SM      = SM结构体
+ * @param[in]  n       = SM编号（0开始）
+ * @return >0: 成功；0: 没有更多SM
  */
 uint16 ecx_siiSMnext(ecx_contextt *context, uint16 slave, ec_eepromSMt* SM, uint16 n)
 {
@@ -642,7 +778,10 @@ uint16 ecx_siiSMnext(ecx_contextt *context, uint16 slave, ec_eepromSMt* SM, uint
 
    if (n < SM->nSM)
    {
+      /* 计算第n个SM的起始地址 */
       a = SM->Startpos + 2 + (n * 8);
+
+      /* 读取SM配置 */
       SM->PhStart = ecx_siigetbyte(context, slave, a++);
       SM->PhStart += (ecx_siigetbyte(context, slave, a++) << 8);
       SM->Plength = ecx_siigetbyte(context, slave, a++);
@@ -655,18 +794,23 @@ uint16 ecx_siiSMnext(ecx_contextt *context, uint16 slave, ec_eepromSMt* SM, uint
    }
    if (eectl)
    {
-      ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */
+      /* 如果EEPROM之前由PDI控制，恢复控制权 */
+      ecx_eeprom2pdi(context, slave);
    }
 
    return retVal;
 }
 
-/** Get PDO data from SII PDO section in slave EEPROM.
- *  @param[in]  context = context struct
- *  @param[in]  slave   = slave number
- *  @param[out] PDO     = PDO struct from SII
- *  @param[in]  t       = 0=RXPDO 1=TXPDO
- *  @return mapping size in bits of PDO
+/** 从从站EEPROM的SII PDO段获取PDO数据。
+ *
+ * PDO（过程数据对象）用于周期性数据交换。
+ * 分为RX PDO（主站到从站）和TX PDO（从站到主站）。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  slave   = 从站号
+ * @param[out] PDO     = 从SII获取的PDO结构体
+ * @param[in]  t       = 0: RX PDO；1: TX PDO
+ * @return PDO的映射大小（位）
  */
 uint32 ecx_siiPDO(ecx_contextt *context, uint16 slave, ec_eepromPDOt* PDO, uint8 t)
 {
@@ -677,32 +821,46 @@ uint32 ecx_siiPDO(ecx_contextt *context, uint16 slave, ec_eepromPDOt* PDO, uint8
    PDO->nPDO = 0;
    PDO->Length = 0;
    PDO->Index[1] = 0;
+
+   /* 初始化每个SM的位大小 */
    for (c = 0 ; c < EC_MAXSM ; c++) PDO->SMbitsize[c] = 0;
+
    if (t > 1)
       t = 1;
+
+   /* 查找PDO段（RX PDO或TX PDO） */
    PDO->Startpos = ecx_siifind(context, slave, ECT_SII_PDO + t);
+
    if (PDO->Startpos > 0)
    {
       a = PDO->Startpos;
+
+      /* 读取段长度 */
       w = ecx_siigetbyte(context, slave, a++);
       w += (ecx_siigetbyte(context, slave, a++) << 8);
       PDO->Length = w;
       c = 1;
-      /* traverse through all PDOs */
+
+      /* 遍历所有PDO */
       do
       {
          PDO->nPDO++;
+
+         /* 读取PDO索引 */
          PDO->Index[PDO->nPDO] = ecx_siigetbyte(context, slave, a++);
          PDO->Index[PDO->nPDO] += (ecx_siigetbyte(context, slave, a++) << 8);
          PDO->BitSize[PDO->nPDO] = 0;
          c++;
+
+         /* 读取条目数量和关联的SM */
          e = ecx_siigetbyte(context, slave, a++);
          PDO->SyncM[PDO->nPDO] = ecx_siigetbyte(context, slave, a++);
          a += 4;
          c += 2;
-         if (PDO->SyncM[PDO->nPDO] < EC_MAXSM) /* active and in range SM? */
+
+         if (PDO->SyncM[PDO->nPDO] < EC_MAXSM) /* SM是否有效且在范围内？ */
          {
-            /* read all entries defined in PDO */
+            /* 读取PDO中定义的所有条目 */
             for (er = 1; er <= e; er++)
             {
                c += 4;
@@ -714,29 +872,46 @@ uint32 ecx_siiPDO(ecx_contextt *context, uint16 slave, ec_eepromPDOt* PDO, uint8
             Size += PDO->BitSize[PDO->nPDO];
             c++;
          }
-         else /* PDO deactivated because SM is 0xff or > EC_MAXSM */
+         else /* PDO已停用，因为SM为0xff或大于EC_MAXSM */
          {
             c += 4 * e;
             a += 8 * e;
             c++;
          }
+
+         /* 限制缓冲区中的PDO条目数量 */
          if (PDO->nPDO >= (EC_MAXEEPDO - 1))
          {
-            c = PDO->Length; /* limit number of PDO entries in buffer */
+            c = PDO->Length;
          }
       }
       while (c < PDO->Length);
    }
+
+   /* 如果EEPROM之前由PDI控制，恢复控制权 */
    if (eectl)
    {
-      ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */
+      ecx_eeprom2pdi(context, slave);
    }
 
    return (Size);
 }
 
+/** FPRD多播命令最大从站数 */
 #define MAX_FPRD_MULTI 64
 
+/** 使用FPRD命令读取多个从站的AL状态。
+ *
+ * FPRD（配置地址读取）命令可以同时读取多个从站的寄存器。
+ * 此函数使用堆叠数据报来高效读取多个从站的AL状态。
+ *
+ * @param[in]  context    = 上下文结构体
+ * @param[in]  n          = 从站数量
+ * @param[in]  configlst  = 从站配置地址列表
+ * @param[out] slstatlst  = 从站AL状态列表
+ * @param[in]  timeout    = 超时时间（微秒）
+ * @return 工作计数器值
+ */
 int ecx_FPRD_multi(ecx_contextt *context, int n, uint16 *configlst, ec_alstatust *slstatlst, int timeout)
 {
    int wkc;
@@ -748,9 +923,13 @@ int ecx_FPRD_multi(ecx_contextt *context, int n, uint16 *configlst, ec_alstatust
    port = context->port;
    idx = ecx_getindex(port);
    slcnt = 0;
+
+   /* 设置第一个FPRD数据报 */
    ecx_setupdatagram(port, &(port->txbuf[idx]), EC_CMD_FPRD, idx,
       *(configlst + slcnt), ECT_REG_ALSTAT, sizeof(ec_alstatust), slstatlst + slcnt);
    sldatapos[slcnt] = EC_HEADERSIZE;
+
+   /* 添加更多FPRD数据报（堆叠） */
    while(++slcnt < (n - 1))
    {
       sldatapos[slcnt] = ecx_adddatagram(port, &(port->txbuf[idx]), EC_CMD_FPRD, idx, TRUE,
@@ -941,14 +1120,14 @@ int ecx_writestate(ecx_contextt *context, uint16 slave)
 
    if (slave == 0)
    {
-      // 广播写入所有从站
+      /* 向所有从站广播状态请求 */
       slstate = htoes(context->slavelist[slave].state);
       ret = ecx_BWR(context->port, 0, ECT_REG_ALCTL, sizeof(slstate),
 	            &slstate, EC_TIMEOUTRET3);
    }
    else
    {
-      // 单播写入指定从站
+      /* 向单个从站发送状态请求 */
       configadr = context->slavelist[slave].configadr;
 
       ret = ecx_FPWRw(context->port, configadr, ECT_REG_ALCTL,
@@ -1111,22 +1290,22 @@ int ecx_mbxempty(ecx_contextt *context, uint16 slave, int timeout)
    return 0;
 }
 
-/**
- * 向从站写入输入邮箱
+/** 向从站写入输入邮箱数据。
  *
- * 该函数将数据写入从站的输入邮箱（IN mailbox），用于发送邮箱数据。
- * 首先检查邮箱是否为空，然后写入数据。
+ * 该函数向指定从站的输入邮箱（Write Mailbox）写入邮箱数据。
+ * 写入前会检查邮箱是否为空，确保不会覆盖未读取的数据。
+ * 邮箱通信用于非实时数据交换，如CoE、EoE、FoE等协议。
  *
- * 邮箱通信流程：
- * 1. 检查输入邮箱是否为空
- * 2. 如果为空，写入数据到邮箱
- * 3. 从站读取数据后，邮箱变空
+ * 邮箱写入流程：
+ * 1. 检查从站是否支持邮箱通信
+ * 2. 等待输入邮箱为空（读取SM状态）
+ * 3. 将数据写入邮箱缓冲区
  *
- * @param[in]  context EtherCAT上下文结构体
- * @param[in]  slave   从站编号
- * @param[out] mbx     要发送的邮箱数据
- * @param[in]  timeout 超时时间（微秒）
- * @return 工作计数器，>0 表示成功
+ * @param[in]  context  = 上下文结构体
+ * @param[in]  slave    = 从站号
+ * @param[in]  mbx      = 要发送的邮箱数据
+ * @param[in]  timeout  = 等待邮箱为空的超时时间（微秒）
+ * @return 工作计数器值（>0表示成功）
  */
 int ecx_mbxsend(ecx_contextt *context, uint16 slave,ec_mbxbuft *mbx, int timeout)
 {
@@ -1135,7 +1314,9 @@ int ecx_mbxsend(ecx_contextt *context, uint16 slave,ec_mbxbuft *mbx, int timeout
 
    wkc = 0;
    configadr = context->slavelist[slave].configadr;
-   mbxl = context->slavelist[slave].mbx_l;  // 邮箱长度
+   mbxl = context->slavelist[slave].mbx_l;
+
+   /* 检查邮箱长度是否有效 */
    if ((mbxl > 0) && (mbxl <= EC_MAXMBX))
    {
       // 检查邮箱是否为空
@@ -1155,51 +1336,56 @@ int ecx_mbxsend(ecx_contextt *context, uint16 slave,ec_mbxbuft *mbx, int timeout
    return wkc;
 }
 
-/**
- * 从从站读取输出邮箱
+/** 从从站接收邮箱数据，阻塞式。
  *
- * 该函数从从站的输出邮箱（OUT mailbox）读取数据，用于接收邮箱响应。
- * 支持邮箱链路层协议的重试请求机制。
+ * 该函数从指定从站的输出邮箱（Read Mailbox）读取邮箱数据。
+ * 使用同步管理器状态位来判断邮箱是否有数据可读。
+ * 函数会阻塞等待直到邮箱有数据或超时。
+ * 支持邮箱链路层的重复请求机制。
  *
- * 邮箱通信流程：
- * 1. 等待输出邮箱有数据可读
- * 2. 读取邮箱数据
- * 3. 处理不同类型的响应：
- *    - 邮箱错误响应：记录错误
- *    - CoE紧急消息：记录紧急错误
- *    - EoE分片数据：调用EOE钩子函数
- *    - 普通响应：返回数据
+ * 邮箱读取流程：
+ * 1. 等待从站输出邮箱状态寄存器的bit3（Mailbox Read Status）置位
+ * 2. 读取邮箱内容
+ * 3. 处理特殊响应类型（错误响应、紧急消息、EoE分片）
+ * 4. 如果读取失败，尝试重置邮箱状态并重试
  *
- * 邮箱链路层重试机制：
- * - 如果读取失败，切换重复请求位
- * - 等待从站确认切换
- * - 重新尝试读取邮箱
+ * 特殊处理：
+ * - 邮箱错误响应（类型0）：调用ecx_mbxerror处理
+ * - CoE紧急消息（服务类型0x01）：调用ecx_mbxemergencyerror处理
+ * - EoE分片数据：调用EOEhook处理
  *
- * @param[in]  context EtherCAT上下文结构体
- * @param[in]  slave   从站编号
- * @param[out] mbx     接收邮箱数据的缓冲区
- * @param[in]  timeout 超时时间（微秒）
- * @return 工作计数器，>0 表示成功
+ * @param[in]  context   = 上下文结构体
+ * @param[in]  slave     = 从站号
+ * @param[out] mbx       = 接收邮箱数据的缓冲区
+ * @param[in]  timeout   = 超时时间（微秒）
+ * @return >0: 成功，工作计数器值；0: 超时或失败
  */
 int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int timeout)
 {
-   uint16 mbxro,mbxl,configadr;
-   int wkc=0;
-   int wkc2;
-   uint16 SMstat;
-   uint8 SMcontr;
-   ec_mbxheadert *mbxh;
-   ec_emcyt *EMp;
-   ec_mbxerrort *MBXEp;
+   uint16 mbxro,mbxl,configadr;   /* mbxro: 邮箱读偏移, mbxl: 邮箱长度, configadr: 配置地址 */
+   int wkc=0;                      /* 工作计数器 */
+   int wkc2;                       /* 辅助工作计数器 */
+   uint16 SMstat;                  /* 同步管理器状态寄存器 */
+   uint8 SMcontr;                  /* 同步管理器控制寄存器 */
+   ec_mbxheadert *mbxh;            /* 邮箱头部指针 */
+   ec_emcyt *EMp;                  /* 紧急消息指针 */
+   ec_mbxerrort *MBXEp;            /* 邮箱错误指针 */
 
+   /* 获取从站配置地址和邮箱长度 */
    configadr = context->slavelist[slave].configadr;
    mbxl = context->slavelist[slave].mbx_rl;  // 读取邮箱长度
+
+   /* 检查邮箱长度是否有效 */
    if ((mbxl > 0) && (mbxl <= EC_MAXMBX))
    {
       osal_timert timer;
 
+      /* 启动超时定时器 */
       osal_timer_start(&timer, timeout);
       wkc = 0;
+
+      /* 等待输出邮箱有数据可读 */
+      /* SM状态寄存器bit3 (0x08) 表示邮箱有数据 */
       do /* wait for read mailbox available */
       {
          SMstat = 0;
@@ -1214,30 +1400,36 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
       }
       while (((wkc <= 0) || ((SMstat & 0x08) == 0)) && (osal_timer_is_expired(&timer) == FALSE));
 
+      /* 邮箱有数据可读？ */
       if ((wkc > 0) && ((SMstat & 0x08) > 0)) /* read mailbox available ? */
       {
          mbxro = context->slavelist[slave].mbx_ro;  // 读取邮箱偏移地址
          mbxh = (ec_mbxheadert *)mbx;
+
          do
          {
+            /* 从从站邮箱读取数据 */
             wkc = ecx_FPRD(context->port, configadr, mbxro, mbxl, mbx, EC_TIMEOUTRET); /* get mailbox */
-            // 检查是否是邮箱错误响应
+
+            /* 检查是否为邮箱错误响应（类型字段为0） */
             if ((wkc > 0) && ((mbxh->mbxtype & 0x0f) == 0x00)) /* Mailbox error response? */
             {
                MBXEp = (ec_mbxerrort *)mbx;
+               /* 处理邮箱错误 */
                ecx_mbxerror(context, slave, etohs(MBXEp->Detail));
-               wkc = 0; /* prevent emergency to cascade up, it is already handled. */
+               wkc = 0; /* 防止错误向上传递，已在此处理 */
             }
             // 检查是否是CoE响应
             else if ((wkc > 0) && ((mbxh->mbxtype & 0x0f) == ECT_MBXT_COE)) /* CoE response? */
             {
                EMp = (ec_emcyt *)mbx;
-               // 检查是否是紧急消息
+               /* CANopen服务类型为0x01表示紧急消息 */
                if ((etohs(EMp->CANOpen) >> 12) == 0x01) /* Emergency request? */
                {
+                  /* 处理紧急消息 */
                   ecx_mbxemergencyerror(context, slave, etohs(EMp->ErrorCode), EMp->ErrorReg,
                           EMp->bData, etohs(EMp->w1), etohs(EMp->w2));
-                  wkc = 0; /* prevent emergency to cascade up, it is already handled. */
+                  wkc = 0; /* 防止紧急消息向上传递，已在此处理 */
                }
             }
             // 检查是否是EoE响应
@@ -1255,7 +1447,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
                   {
                      if (context->EOEhook(context, slave, eoembx) > 0)
                      {
-                        /* Fragment handled by EoE hook */
+                        /* 分片已由EoE钩子处理 */
                         wkc = 0;
                      }
                   }
@@ -1266,14 +1458,19 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
                // 读取邮箱丢失，使用链路层重试机制
                if (wkc <= 0) /* read mailbox lost */
                {
+                  /* 切换重复请求位，触发从站重发 */
                   SMstat ^= 0x0200; /* toggle repeat request */
                   SMstat = htoes(SMstat);
                   wkc2 = ecx_FPWR(context->port, configadr, ECT_REG_SM1STAT, sizeof(SMstat), &SMstat, EC_TIMEOUTRET);
                   SMstat = etohs(SMstat);
+
+                  /* 等待从站确认切换 */
                   do /* wait for toggle ack */
                   {
                      wkc2 = ecx_FPRD(context->port, configadr, ECT_REG_SM1CONTR, sizeof(SMcontr), &SMcontr, EC_TIMEOUTRET);
                    } while (((wkc2 <= 0) || ((SMcontr & 0x02) != (HI_BYTE(SMstat) & 0x02))) && (osal_timer_is_expired(&timer) == FALSE));
+
+                  /* 等待邮箱再次有数据可读 */
                   do /* wait for read mailbox available */
                   {
                      wkc2 = ecx_FPRD(context->port, configadr, ECT_REG_SM1STAT, sizeof(SMstat), &SMstat, EC_TIMEOUTRET);
@@ -1289,6 +1486,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
       }
       else /* no read mailbox available */
       {
+         /* 邮箱无数据，返回超时 */
          if (wkc > 0)
             wkc = EC_TIMEOUT;
       }
@@ -2290,46 +2488,86 @@ int ecx_receive_processdata_group(ecx_contextt *context, uint8 group, int timeou
    return wkc;
 }
 
-
+/** 发送过程数据（默认组0）。
+ *
+ * 这是ecx_send_processdata_group的便捷封装，
+ * 使用默认组0（所有从站）。
+ *
+ * @param[in]  context = 上下文结构体
+ * @return >0: 过程数据已发送
+ */
 int ecx_send_processdata(ecx_contextt *context)
 {
    return ecx_send_processdata_group(context, 0);
 }
 
+/** 发送重叠过程数据（默认组0）。
+ *
+ * 这是ecx_send_overlap_processdata_group的便捷封装，
+ * 使用默认组0（所有从站）。
+ *
+ * @param[in]  context = 上下文结构体
+ * @return >0: 过程数据已发送
+ */
 int ecx_send_overlap_processdata(ecx_contextt *context)
 {
    return ecx_send_overlap_processdata_group(context, 0);
 }
 
+/** 接收过程数据（默认组0）。
+ *
+ * 这是ecx_receive_processdata_group的便捷封装，
+ * 使用默认组0（所有从站）。
+ *
+ * @param[in]  context = 上下文结构体
+ * @param[in]  timeout = 超时时间（微秒）
+ * @return 工作计数器值
+ */
 int ecx_receive_processdata(ecx_contextt *context, int timeout)
 {
    return ecx_receive_processdata_group(context, 0, timeout);
 }
 
 #ifdef EC_VER1
+/** EC_VER1兼容函数：将错误压入错误列表。
+ * @param[in] Ec = 错误结构体指针
+ */
 void ec_pusherror(const ec_errort *Ec)
 {
    ecx_pusherror(&ecx_context, Ec);
 }
 
+/** EC_VER1兼容函数：从错误列表弹出错误。
+ * @param[out] Ec = 错误结构体指针
+ * @return TRUE: 成功；FALSE: 列表为空
+ */
 boolean ec_poperror(ec_errort *Ec)
 {
    return ecx_poperror(&ecx_context, Ec);
 }
 
+/** EC_VER1兼容函数：检查错误列表是否有条目。
+ * @return TRUE: 有错误；FALSE: 无错误
+ */
 boolean ec_iserror(void)
 {
    return ecx_iserror(&ecx_context);
 }
 
+/** EC_VER1兼容函数：报告数据包错误。
+ * @param[in] Slave     = 从站号
+ * @param[in] Index     = 索引
+ * @param[in] SubIdx    = 子索引
+ * @param[in] ErrorCode = 错误码
+ */
 void ec_packeterror(uint16 Slave, uint16 Index, uint8 SubIdx, uint16 ErrorCode)
 {
    ecx_packeterror(&ecx_context, Slave, Index, SubIdx, ErrorCode);
 }
 
-/** Initialise lib in single NIC mode
- * @param[in] ifname   = Dev name, f.e. "eth0"
- * @return >0 if OK
+/** 初始化库（单网卡模式）- EC_VER1兼容函数。
+ * @param[in] ifname = 网络接口名称，例如 "eth0"
+ * @return >0: 成功；<=0: 失败
  * @see ecx_init
  */
 int ec_init(const char * ifname)
@@ -2337,10 +2575,10 @@ int ec_init(const char * ifname)
    return ecx_init(&ecx_context, ifname);
 }
 
-/** Initialise lib in redundant NIC mode
- * @param[in]  ifname   = Primary Dev name, f.e. "eth0"
- * @param[in]  if2name  = Secondary Dev name, f.e. "eth1"
- * @return >0 if OK
+/** 初始化库（冗余网卡模式）- EC_VER1兼容函数。
+ * @param[in]  ifname  = 主网卡名称，例如 "eth0"
+ * @param[in]  if2name = 备用网卡名称，例如 "eth1"
+ * @return >0: 成功；<=0: 失败
  * @see ecx_init_redundant
  */
 int ec_init_redundant(const char *ifname, char *if2name)
@@ -2348,7 +2586,7 @@ int ec_init_redundant(const char *ifname, char *if2name)
    return ecx_init_redundant (&ecx_context, &ecx_redport, ifname, if2name);
 }
 
-/** Close lib.
+/** 关闭库 - EC_VER1兼容函数。
  * @see ecx_close
  */
 void ec_close(void)
@@ -2356,12 +2594,12 @@ void ec_close(void)
    ecx_close(&ecx_context);
 };
 
-/** Read one byte from slave EEPROM via cache.
- *  If the cache location is empty then a read request is made to the slave.
- *  Depending on the slave capabillities the request is 4 or 8 bytes.
- *  @param[in] slave   = slave number
- *  @param[in] address = eeprom address in bytes (slave uses words)
- *  @return requested byte, if not available then 0xff
+/** 从从站EEPROM缓存读取一个字节 - EC_VER1兼容函数。
+ *  如果缓存位置为空，则向从站发送读取请求。
+ *  根据从站能力，请求可以是4或8字节。
+ *  @param[in] slave   = 从站号
+ *  @param[in] address = EEPROM字节地址（从站使用字地址）
+ *  @return 请求的字节，如果不可用则返回0xff
  * @see ecx_siigetbyte
  */
 uint8 ec_siigetbyte(uint16 slave, uint16 address)
@@ -2369,10 +2607,10 @@ uint8 ec_siigetbyte(uint16 slave, uint16 address)
    return ecx_siigetbyte (&ecx_context, slave, address);
 }
 
-/** Find SII section header in slave EEPROM.
- *  @param[in] slave   = slave number
- *  @param[in] cat     = section category
- *  @return byte address of section at section length entry, if not available then 0
+/** 在从站EEPROM中查找SII段头部 - EC_VER1兼容函数。
+ *  @param[in] slave = 从站号
+ *  @param[in] cat   = 段类别
+ *  @return 段长度条目处的字节地址，如果不可用则返回0
  *  @see ecx_siifind
  */
 int16 ec_siifind(uint16 slave, uint16 cat)
@@ -2380,10 +2618,10 @@ int16 ec_siifind(uint16 slave, uint16 cat)
    return ecx_siifind (&ecx_context, slave, cat);
 }
 
-/** Get string from SII string section in slave EEPROM.
- *  @param[out] str    = requested string, 0x00 if not found
- *  @param[in]  slave  = slave number
- *  @param[in]  Sn     = string number
+/** 从从站EEPROM的SII字符串段获取字符串 - EC_VER1兼容函数。
+ *  @param[out] str   = 请求的字符串，如果未找到则为0x00
+ *  @param[in]  slave = 从站号
+ *  @param[in]  Sn    = 字符串编号
  *  @see ecx_siistring
  */
 void ec_siistring(char *str, uint16 slave, uint16 Sn)
@@ -2391,10 +2629,10 @@ void ec_siistring(char *str, uint16 slave, uint16 Sn)
    ecx_siistring(&ecx_context, str, slave, Sn);
 }
 
-/** Get FMMU data from SII FMMU section in slave EEPROM.
- *  @param[in]  slave  = slave number
- *  @param[out] FMMU   = FMMU struct from SII, max. 4 FMMU's
- *  @return number of FMMU's defined in section
+/** 从从站EEPROM的SII FMMU段获取FMMU数据 - EC_VER1兼容函数。
+ *  @param[in]  slave = 从站号
+ *  @param[out] FMMU  = 从SII获取的FMMU结构体，最多4个FMMU
+ *  @return 段中定义的FMMU数量
  *  @see ecx_siiFMMU
  */
 uint16 ec_siiFMMU(uint16 slave, ec_eepromFMMUt* FMMU)
@@ -2402,10 +2640,10 @@ uint16 ec_siiFMMU(uint16 slave, ec_eepromFMMUt* FMMU)
    return ecx_siiFMMU (&ecx_context, slave, FMMU);
 }
 
-/** Get SM data from SII SM section in slave EEPROM.
- *  @param[in]  slave   = slave number
- *  @param[out] SM      = first SM struct from SII
- *  @return number of SM's defined in section
+/** 从从站EEPROM的SII SM段获取SM数据 - EC_VER1兼容函数。
+ *  @param[in]  slave = 从站号
+ *  @param[out] SM    = 从SII获取的第一个SM结构体
+ *  @return 段中定义的SM数量
  *  @see ecx_siiSM
  */
 uint16 ec_siiSM(uint16 slave, ec_eepromSMt* SM)
@@ -2413,11 +2651,11 @@ uint16 ec_siiSM(uint16 slave, ec_eepromSMt* SM)
    return ecx_siiSM (&ecx_context, slave, SM);
 }
 
-/** Get next SM data from SII SM section in slave EEPROM.
- *  @param[in]  slave  = slave number
- *  @param[out] SM     = first SM struct from SII
- *  @param[in]  n      = SM number
- *  @return >0 if OK
+/** 从从站EEPROM的SII SM段获取下一个SM数据 - EC_VER1兼容函数。
+ *  @param[in]  slave = 从站号
+ *  @param[out] SM    = SM结构体
+ *  @param[in]  n     = SM编号
+ *  @return >0: 成功
  *  @see ecx_siiSMnext
  */
 uint16 ec_siiSMnext(uint16 slave, ec_eepromSMt* SM, uint16 n)
@@ -2425,11 +2663,11 @@ uint16 ec_siiSMnext(uint16 slave, ec_eepromSMt* SM, uint16 n)
    return ecx_siiSMnext (&ecx_context, slave, SM, n);
 }
 
-/** Get PDO data from SII PDO section in slave EEPROM.
- *  @param[in]  slave  = slave number
- *  @param[out] PDO    = PDO struct from SII
- *  @param[in]  t      = 0=RXPDO 1=TXPDO
- *  @return mapping size in bits of PDO
+/** 从从站EEPROM的SII PDO段获取PDO数据 - EC_VER1兼容函数。
+ *  @param[in]  slave = 从站号
+ *  @param[out] PDO   = 从SII获取的PDO结构体
+ *  @param[in]  t      = 0: RX PDO；1: TX PDO
+ *  @return PDO的映射大小（位）
  *  @see ecx_siiPDO
  */
 uint32 ec_siiPDO(uint16 slave, ec_eepromPDOt* PDO, uint8 t)
@@ -2437,9 +2675,9 @@ uint32 ec_siiPDO(uint16 slave, ec_eepromPDOt* PDO, uint8 t)
    return ecx_siiPDO (&ecx_context, slave, PDO, t);
 }
 
-/** Read all slave states in ec_slave.
- * @warning The BOOT state is actually higher than INIT and PRE_OP (see state representation).
- * @return lowest state found
+/** 读取所有从站的AL状态 - EC_VER1兼容函数。
+ * @warning BOOT状态实际上比INIT和PRE_OP更高（参见状态表示）。
+ * @return 找到的最低状态值
  * @see ecx_readstate
  */
 int ec_readstate(void)
@@ -2447,9 +2685,10 @@ int ec_readstate(void)
    return ecx_readstate (&ecx_context);
 }
 
-/** Write slave state, if slave = 0 then write to all slaves.
- * The function does not check if the actual state is changed.
- * @param[in] slave = Slave number, 0 = master
+/** 写入从站AL状态 - EC_VER1兼容函数。
+ * 如果slave = 0，则写入所有从站。
+ * 函数不检查实际状态是否已改变。
+ * @param[in] slave = 从站号，0 = 所有从站
  * @return 0
  * @see ecx_writestate
  */
@@ -2458,18 +2697,17 @@ int ec_writestate(uint16 slave)
    return ecx_writestate(&ecx_context, slave);
 }
 
-/** Check actual slave state.
- * This is a blocking function.
- * To refresh the state of all slaves ecx_readstate() should be called.
- * @warning If this is used for slave 0 (=all slaves), the state of all slaves is read by an bitwise OR operation.
- * The returned value is also the bitwise OR state of all slaves.
- * This has some implications for the BOOT state. The Boot state representation collides with INIT | PRE_OP so this
- * function cannot be used for slave = 0 and reqstate = EC_STATE_BOOT and also, if the returned state is BOOT, some
- * slaves might actually be in INIT and PRE_OP and not in BOOT.
- * @param[in] slave       = Slave number, 0 = all slaves
- * @param[in] reqstate    = Requested state
- * @param[in] timeout     = Timeout value in us
- * @return Requested state, or found state after timeout.
+/** 检查从站的实际状态 - EC_VER1兼容函数。
+ * 这是一个阻塞函数。
+ * 要刷新所有从站的状态，应该调用ec_readstate()函数。
+ * @warning 如果用于从站0（=所有从站），所有从站的状态通过按位OR操作读取。
+ * 返回值也是所有从站状态的按位OR值。
+ * 这对BOOT状态有一些影响。BOOT状态表示与INIT | PRE_OP冲突，
+ * 因此此函数不能用于slave = 0且reqstate = EC_STATE_BOOT的情况。
+ * @param[in] slave    = 从站号，0 = 所有从站
+ * @param[in] reqstate = 请求的状态
+ * @param[in] timeout  = 超时值（微秒）
+ * @return 请求的状态，或超时后找到的状态
  * @see ecx_statecheck
  */
 uint16 ec_statecheck(uint16 slave, uint16 reqstate, int timeout)
@@ -2477,10 +2715,10 @@ uint16 ec_statecheck(uint16 slave, uint16 reqstate, int timeout)
    return ecx_statecheck (&ecx_context, slave, reqstate, timeout);
 }
 
-/** Check if IN mailbox of slave is empty.
- * @param[in] slave    = Slave number
- * @param[in] timeout  = Timeout in us
- * @return >0 is success
+/** 检查从站输入邮箱是否为空 - EC_VER1兼容函数。
+ * @param[in] slave   = 从站号
+ * @param[in] timeout = 超时时间（微秒）
+ * @return >0: 成功
  * @see ecx_mbxempty
  */
 int ec_mbxempty(uint16 slave, int timeout)
@@ -2488,11 +2726,11 @@ int ec_mbxempty(uint16 slave, int timeout)
    return ecx_mbxempty (&ecx_context, slave, timeout);
 }
 
-/** Write IN mailbox to slave.
- * @param[in]  slave      = Slave number
- * @param[out] mbx        = Mailbox data
- * @param[in]  timeout    = Timeout in us
- * @return Work counter (>0 is success)
+/** 向从站写入输入邮箱数据 - EC_VER1兼容函数。
+ * @param[in]  slave   = 从站号
+ * @param[out] mbx     = 邮箱数据
+ * @param[in]  timeout = 超时时间（微秒）
+ * @return 工作计数器（>0表示成功）
  * @see ecx_mbxsend
  */
 int ec_mbxsend(uint16 slave,ec_mbxbuft *mbx, int timeout)
@@ -2500,12 +2738,12 @@ int ec_mbxsend(uint16 slave,ec_mbxbuft *mbx, int timeout)
    return ecx_mbxsend (&ecx_context, slave, mbx, timeout);
 }
 
-/** Read OUT mailbox from slave.
- * Supports Mailbox Link Layer with repeat requests.
- * @param[in]  slave      = Slave number
- * @param[out] mbx        = Mailbox data
- * @param[in]  timeout    = Timeout in us
- * @return Work counter (>0 is success)
+/** 从从站读取输出邮箱数据 - EC_VER1兼容函数。
+ * 支持邮箱链路层的重复请求机制。
+ * @param[in]  slave   = 从站号
+ * @param[out] mbx     = 邮箱数据
+ * @param[in]  timeout = 超时时间（微秒）
+ * @return 工作计数器（>0表示成功）
  * @see ecx_mbxreceive
  */
 int ec_mbxreceive(uint16 slave, ec_mbxbuft *mbx, int timeout)
@@ -2513,9 +2751,9 @@ int ec_mbxreceive(uint16 slave, ec_mbxbuft *mbx, int timeout)
    return ecx_mbxreceive (&ecx_context, slave, mbx, timeout);
 }
 
-/** Dump complete EEPROM data from slave in buffer.
- * @param[in]  slave    = Slave number
- * @param[out] esibuf   = EEPROM data buffer, make sure it is big enough.
+/** 从从站转储完整的EEPROM数据到缓冲区 - EC_VER1兼容函数。
+ * @param[in]  slave  = 从站号
+ * @param[out] esibuf = EEPROM数据缓冲区，确保足够大
  * @see ecx_esidump
  */
 void ec_esidump(uint16 slave, uint8 *esibuf)
@@ -2523,11 +2761,11 @@ void ec_esidump(uint16 slave, uint8 *esibuf)
    ecx_esidump (&ecx_context, slave, esibuf);
 }
 
-/** Read EEPROM from slave bypassing cache.
- * @param[in] slave     = Slave number
- * @param[in] eeproma   = (WORD) Address in the EEPROM
- * @param[in] timeout   = Timeout in us.
- * @return EEPROM data 32bit
+/** 绕过缓存从从站读取EEPROM - EC_VER1兼容函数。
+ * @param[in] slave   = 从站号
+ * @param[in] eeproma = EEPROM地址（字）
+ * @param[in] timeout = 超时时间（微秒）
+ * @return EEPROM数据（32位）
  * @see ecx_readeeprom
  */
 uint32 ec_readeeprom(uint16 slave, uint16 eeproma, int timeout)
@@ -2535,12 +2773,12 @@ uint32 ec_readeeprom(uint16 slave, uint16 eeproma, int timeout)
    return ecx_readeeprom (&ecx_context, slave, eeproma, timeout);
 }
 
-/** Write EEPROM to slave bypassing cache.
- * @param[in] slave     = Slave number
- * @param[in] eeproma   = (WORD) Address in the EEPROM
- * @param[in] data      = 16bit data
- * @param[in] timeout   = Timeout in us.
- * @return >0 if OK
+/** 绕过缓存向从站写入EEPROM - EC_VER1兼容函数。
+ * @param[in] slave   = 从站号
+ * @param[in] eeproma = EEPROM地址（字）
+ * @param[in] data    = 16位数据
+ * @param[in] timeout = 超时时间（微秒）
+ * @return >0: 成功
  * @see ecx_writeeeprom
  */
 int ec_writeeeprom(uint16 slave, uint16 eeproma, uint16 data, int timeout)
@@ -2548,9 +2786,10 @@ int ec_writeeeprom(uint16 slave, uint16 eeproma, uint16 data, int timeout)
    return ecx_writeeeprom (&ecx_context, slave, eeproma, data, timeout);
 }
 
-/** Set eeprom control to master. Only if set to PDI.
- * @param[in] slave = Slave number
- * @return >0 if OK
+/** 将EEPROM控制权交给主站 - EC_VER1兼容函数。
+ * 仅当之前设置为PDI控制时有效。
+ * @param[in] slave = 从站号
+ * @return >0: 成功
  * @see ecx_eeprom2master
  */
 int ec_eeprom2master(uint16 slave)
@@ -2558,33 +2797,46 @@ int ec_eeprom2master(uint16 slave)
    return ecx_eeprom2master(&ecx_context, slave);
 }
 
+/** 将EEPROM控制权交给PDI - EC_VER1兼容函数。
+ * @param[in] slave = 从站号
+ * @return >0: 成功
+ * @see ecx_eeprom2pdi
+ */
 int ec_eeprom2pdi(uint16 slave)
 {
    return ecx_eeprom2pdi(&ecx_context, slave);
 }
 
+/** 等待EEPROM不忙（自动增量地址） - EC_VER1兼容函数。
+ * @param[in] aiadr   = 从站自动增量地址
+ * @param[out] estat  = EEPROM状态
+ * @param[in] timeout = 超时时间
+ * @return EEPROM状态
+ */
 uint16 ec_eeprom_waitnotbusyAP(uint16 aiadr,uint16 *estat, int timeout)
 {
    return ecx_eeprom_waitnotbusyAP (&ecx_context, aiadr, estat, timeout);
 }
 
-/** Read EEPROM from slave bypassing cache. APRD method.
- * @param[in] aiadr       = auto increment address of slave
- * @param[in] eeproma     = (WORD) Address in the EEPROM
- * @param[in] timeout     = Timeout in us.
- * @return EEPROM data 64bit or 32bit
+/** 绕过缓存从从站读取EEPROM（APRD方法） - EC_VER1兼容函数。
+ * 使用自动增量地址读取。
+ * @param[in] aiadr   = 从站自动增量地址
+ * @param[in] eeproma = EEPROM地址（字）
+ * @param[in] timeout = 超时时间（微秒）
+ * @return EEPROM数据（64位或32位）
  */
 uint64 ec_readeepromAP(uint16 aiadr, uint16 eeproma, int timeout)
 {
    return ecx_readeepromAP (&ecx_context, aiadr, eeproma, timeout);
 }
 
-/** Write EEPROM to slave bypassing cache. APWR method.
- * @param[in] aiadr     = configured address of slave
- * @param[in] eeproma   = (WORD) Address in the EEPROM
- * @param[in] data      = 16bit data
- * @param[in] timeout   = Timeout in us.
- * @return >0 if OK
+/** 绕过缓存向从站写入EEPROM（APWR方法） - EC_VER1兼容函数。
+ * 使用自动增量地址写入。
+ * @param[in] aiadr   = 从站自动增量地址
+ * @param[in] eeproma = EEPROM地址（字）
+ * @param[in] data    = 16位数据
+ * @param[in] timeout = 超时时间（微秒）
+ * @return >0: 成功
  * @see ecx_writeeepromAP
  */
 int ec_writeeepromAP(uint16 aiadr, uint16 eeproma, uint16 data, int timeout)
@@ -2592,16 +2844,23 @@ int ec_writeeepromAP(uint16 aiadr, uint16 eeproma, uint16 data, int timeout)
    return ecx_writeeepromAP (&ecx_context, aiadr, eeproma, data, timeout);
 }
 
+/** 等待EEPROM不忙（配置地址） - EC_VER1兼容函数。
+ * @param[in] configadr = 从站配置地址
+ * @param[out] estat    = EEPROM状态
+ * @param[in] timeout   = 超时时间
+ * @return EEPROM状态
+ */
 uint16 ec_eeprom_waitnotbusyFP(uint16 configadr,uint16 *estat, int timeout)
 {
    return ecx_eeprom_waitnotbusyFP (&ecx_context, configadr, estat, timeout);
 }
 
-/** Read EEPROM from slave bypassing cache. FPRD method.
- * @param[in] configadr   = configured address of slave
- * @param[in] eeproma     = (WORD) Address in the EEPROM
- * @param[in] timeout     = Timeout in us.
- * @return EEPROM data 64bit or 32bit
+/** 绕过缓存从从站读取EEPROM（FPRD方法） - EC_VER1兼容函数。
+ * 使用配置地址读取。
+ * @param[in] configadr = 从站配置地址
+ * @param[in] eeproma   = EEPROM地址（字）
+ * @param[in] timeout   = 超时时间（微秒）
+ * @return EEPROM数据（64位或32位）
  * @see ecx_readeepromFP
  */
 uint64 ec_readeepromFP(uint16 configadr, uint16 eeproma, int timeout)
@@ -2609,12 +2868,13 @@ uint64 ec_readeepromFP(uint16 configadr, uint16 eeproma, int timeout)
    return ecx_readeepromFP (&ecx_context, configadr, eeproma, timeout);
 }
 
-/** Write EEPROM to slave bypassing cache. FPWR method.
- * @param[in] configadr   = configured address of slave
- * @param[in] eeproma     = (WORD) Address in the EEPROM
- * @param[in] data        = 16bit data
- * @param[in] timeout     = Timeout in us.
- * @return >0 if OK
+/** 绕过缓存向从站写入EEPROM（FPWR方法） - EC_VER1兼容函数。
+ * 使用配置地址写入。
+ * @param[in] configadr = 从站配置地址
+ * @param[in] eeproma   = EEPROM地址（字）
+ * @param[in] data      = 16位数据
+ * @param[in] timeout   = 超时时间（微秒）
+ * @return >0: 成功
  * @see ecx_writeeepromFP
  */
 int ec_writeeepromFP(uint16 configadr, uint16 eeproma, uint16 data, int timeout)
@@ -2622,10 +2882,10 @@ int ec_writeeepromFP(uint16 configadr, uint16 eeproma, uint16 data, int timeout)
    return ecx_writeeepromFP (&ecx_context, configadr, eeproma, data, timeout);
 }
 
-/** Read EEPROM from slave bypassing cache.
- * Parallel read step 1, make request to slave.
- * @param[in] slave       = Slave number
- * @param[in] eeproma     = (WORD) Address in the EEPROM
+/** 绕过缓存从从站读取EEPROM - EC_VER1兼容函数。
+ * 并行读取步骤1：向从站发送请求。
+ * @param[in] slave   = 从站号
+ * @param[in] eeproma = EEPROM地址（字）
  * @see ecx_readeeprom1
  */
 void ec_readeeprom1(uint16 slave, uint16 eeproma)
@@ -2633,11 +2893,11 @@ void ec_readeeprom1(uint16 slave, uint16 eeproma)
    ecx_readeeprom1 (&ecx_context, slave, eeproma);
 }
 
-/** Read EEPROM from slave bypassing cache.
- * Parallel read step 2, actual read from slave.
- * @param[in] slave       = Slave number
- * @param[in] timeout     = Timeout in us.
- * @return EEPROM data 32bit
+/** 绕过缓存从从站读取EEPROM - EC_VER1兼容函数。
+ * 并行读取步骤2：实际从从站读取数据。
+ * @param[in] slave   = 从站号
+ * @param[in] timeout = 超时时间（微秒）
+ * @return EEPROM数据（32位）
  * @see ecx_readeeprom2
  */
 uint32 ec_readeeprom2(uint16 slave, int timeout)
@@ -2645,16 +2905,16 @@ uint32 ec_readeeprom2(uint16 slave, int timeout)
    return ecx_readeeprom2 (&ecx_context, slave, timeout);
 }
 
-/** Transmit processdata to slaves.
- * Uses LRW, or LRD/LWR if LRW is not allowed (blockLRW).
- * Both the input and output processdata are transmitted.
- * The outputs with the actual data, the inputs have a placeholder.
- * The inputs are gathered with the receive processdata function.
- * In contrast to the base LRW function this function is non-blocking.
- * If the processdata does not fit in one datagram, multiple are used.
- * In order to recombine the slave response, a stack is used.
- * @param[in]  group          = group number
- * @return >0 if processdata is transmitted.
+/** 向从站发送过程数据 - EC_VER1兼容函数。
+ * 使用LRW，如果不允许LRW则使用LRD/LWR。
+ * 输入和输出过程数据都会被发送。
+ * 输出包含实际数据，输入使用占位符。
+ * 输入数据通过接收过程数据函数收集。
+ * 与基本LRW函数不同，此函数是非阻塞的。
+ * 如果过程数据无法放入一个数据报中，则使用多个数据报。
+ * 为了重新组合从站响应，使用了一个栈。
+ * @param[in]  group = 组号
+ * @return >0: 过程数据已发送
  * @see ecx_send_processdata_group
  */
 int ec_send_processdata_group(uint8 group)
@@ -2662,30 +2922,30 @@ int ec_send_processdata_group(uint8 group)
    return ecx_send_processdata_group (&ecx_context, group);
 }
 
-/** Transmit processdata to slaves.
-* Uses LRW, or LRD/LWR if LRW is not allowed (blockLRW).
-* Both the input and output processdata are transmitted in the overlapped IOmap.
-* The outputs with the actual data, the inputs replace the output data in the
-* returning frame. The inputs are gathered with the receive processdata function.
-* In contrast to the base LRW function this function is non-blocking.
-* If the processdata does not fit in one datagram, multiple are used.
-* In order to recombine the slave response, a stack is used.
-* @param[in]  group          = group number
-* @return >0 if processdata is transmitted.
-* @see ecx_send_overlap_processdata_group
-*/
+/** 向从站发送重叠过程数据 - EC_VER1兼容函数。
+ * 使用LRW，如果不允许LRW则使用LRD/LWR。
+ * 输入和输出过程数据在重叠IOmap中发送。
+ * 输出包含实际数据，输入在返回帧中替换输出数据。
+ * 输入数据通过接收过程数据函数收集。
+ * 与基本LRW函数不同，此函数是非阻塞的。
+ * 如果过程数据无法放入一个数据报中，则使用多个数据报。
+ * 为了重新组合从站响应，使用了一个栈。
+ * @param[in]  group = 组号
+ * @return >0: 过程数据已发送
+ * @see ecx_send_overlap_processdata_group
+ */
 int ec_send_overlap_processdata_group(uint8 group)
 {
    return ecx_send_overlap_processdata_group(&ecx_context, group);
 }
 
-/** Receive processdata from slaves.
- * Second part from ec_send_processdata().
- * Received datagrams are recombined with the processdata with help from the stack.
- * If a datagram contains input processdata it copies it to the processdata structure.
- * @param[in]  group          = group number
- * @param[in]  timeout        = Timeout in us.
- * @return Work counter.
+/** 从从站接收过程数据 - EC_VER1兼容函数。
+ * ec_send_processdata()的第二部分。
+ * 接收到的数据报借助栈与过程数据重新组合。
+ * 如果数据报包含输入过程数据，则将其复制到过程数据结构中。
+ * @param[in]  group   = 组号
+ * @param[in]  timeout = 超时时间（微秒）
+ * @return 工作计数器值
  * @see ecx_receive_processdata_group
  */
 int ec_receive_processdata_group(uint8 group, int timeout)
@@ -2693,16 +2953,26 @@ int ec_receive_processdata_group(uint8 group, int timeout)
    return ecx_receive_processdata_group (&ecx_context, group, timeout);
 }
 
+/** 发送过程数据（默认组0） - EC_VER1兼容函数。
+ * @return >0: 过程数据已发送
+ */
 int ec_send_processdata(void)
 {
    return ec_send_processdata_group(0);
 }
 
+/** 发送重叠过程数据（默认组0） - EC_VER1兼容函数。
+ * @return >0: 过程数据已发送
+ */
 int ec_send_overlap_processdata(void)
 {
    return ec_send_overlap_processdata_group(0);
 }
 
+/** 接收过程数据（默认组0） - EC_VER1兼容函数。
+ * @param[in] timeout = 超时时间（微秒）
+ * @return 工作计数器值
+ */
 int ec_receive_processdata(int timeout)
 {
    return ec_receive_processdata_group(0, timeout);
