@@ -158,6 +158,14 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr )
 
     while(1)
     {
+        /* 检查是否需要状态检查：
+         * 1. 当工作计数器(wkc)小于预期值时，说明有从站未响应
+         * 2. 当docheckstate为true时，强制进行状态检查
+         *
+         * docheckstate作用：标记是否需要持续检查从站状态，
+         * 当发现有从站状态异常时会被设置为true，确保在下一次循环中
+         * 继续检查状态，直到所有从站恢复正常
+         */
         if( inOP && ((wkc < expectedWKC) || ec_group[currentgroup].docheckstate))
         {
             if (needlf)
@@ -166,22 +174,30 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr )
                printf("\n");
             }
             /* one ore more slaves are not responding */
+            /* 重置docheckstate，准备进行状态检查 */
             ec_group[currentgroup].docheckstate = FALSE;
+            /* 读取所有从站的当前状态 */
             ec_readstate();
+            /* 遍历所有从站检查状态 */
             for (slave = 1; slave <= ec_slavecount; slave++)
             {
+               /* 检查当前组内的从站是否处于OPERATIONAL状态 */
                if ((ec_slave[slave].group == currentgroup) && (ec_slave[slave].state != EC_STATE_OPERATIONAL))
                {
+                  /* 发现异常状态，设置docheckstate为true，下次循环继续检查 */
                   ec_group[currentgroup].docheckstate = TRUE;
+                  /* 处理不同的异常状态 */
                   if (ec_slave[slave].state == (EC_STATE_SAFE_OP + EC_STATE_ERROR))
                   {
                      printf("ERROR : slave %d is in SAFE_OP + ERROR, attempting ack.\n", slave);
+                     /* 尝试通过ACK清除错误状态 */
                      ec_slave[slave].state = (EC_STATE_SAFE_OP + EC_STATE_ACK);
                      ec_writestate(slave);
                   }
                   else if(ec_slave[slave].state == EC_STATE_SAFE_OP)
                   {
                      printf("WARNING : slave %d is in SAFE_OP, change to OPERATIONAL.\n", slave);
+                     /* 将从站状态切换到OPERATIONAL */
                      ec_slave[slave].state = EC_STATE_OPERATIONAL;
                      ec_writestate(slave);
                   }

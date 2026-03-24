@@ -249,10 +249,13 @@ typedef struct ec_group
    /** IOmap缓冲区中的输入指针 */
    uint8            *inputs;
    /** 是否具有DC（分布式时钟）能力 */
+   // 用于决定是否需要发送FRMW 0x910命令
    boolean          hasdc;
    /** 下一个DC从站 */
+   // 发送FRMW 0x910命令的从站地址
    uint16           DCnext;
    /** E-bus电流 */
+   // 目前只用于打印
    int16            Ebuscurrent;
    /** 如果>0，则在过程数据中阻止使用LRW */
    uint8            blockLRW;
@@ -266,7 +269,9 @@ typedef struct ec_group
    uint16           outputsWKC;
    /** 预期的输入工作计数器 */
    uint16           inputsWKC;
-   /** 是否检查从站状态 */
+   // docheckstate作用：标记是否需要持续检查从站状态，
+   // 当发现有从站状态异常时会被设置为true，确保在下一次循环中
+   // 继续检查状态，直到所有从站恢复正常
    boolean          docheckstate;
    /** IO分段列表。数据报不能将SM分成两部分。 */
    uint32           IOsegment[EC_MAXIOSEGMENTS];

@@ -751,33 +751,57 @@ int ecx_FPRD_multi(ecx_contextt *context, int n, uint16 *configlst, ec_alstatust
    return wkc;
 }
 
-/** Read all slave states in ec_slave.
- * @warning The BOOT state is actually higher than INIT and PRE_OP (see state representation)
- * @param[in] context = context struct
- * @return lowest state found
+/**
+ * 读取所有从站的状态
+ *
+ * 该函数读取总线上所有从站的AL状态，并更新从站列表中的状态信息。
+ * 采用优化的读取策略：首先尝试使用广播读取，如果所有从站状态一致且无错误，
+ * 则无需发送额外的数据报；否则逐个读取从站状态。
+ *
+ * EtherCAT从站状态：
+ * - INIT (0x01): 初始化状态
+ * - PRE_OP (0x02): 预运行状态
+ * - BOOT (0x03): 引导状态（与INIT|PRE_OP冲突）
+ * - SAFE_OP (0x04): 安全运行状态
+ * - OPERATIONAL (0x08): 运行状态
+ *
+ * 状态读取策略：
+ * 1. 首先发送广播读(BRD)命令读取所有从站状态
+ * 2. 如果所有从站状态一致且无错误标志，直接更新状态
+ * 3. 否则使用FPRD_multi批量读取每个从站的状态
+ *
+ * @warning BOOT状态实际上比INIT和PRE_OP更高（参见状态表示）
+ *          BOOT状态与PRE_OP | INIT冲突，无法在此函数中正确处理
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @return 找到的最低状态值，用于判断整个系统的状态
  */
 int ecx_readstate(ecx_contextt *context)
 {
    uint16 slave, fslave, lslave, configadr, lowest, rval, bitwisestate;
-   ec_alstatust sl[MAX_FPRD_MULTI];
-   uint16 slca[MAX_FPRD_MULTI];
+   ec_alstatust sl[MAX_FPRD_MULTI];       // 从站AL状态结构数组
+   uint16 slca[MAX_FPRD_MULTI];           // 从站配置地址数组
    boolean noerrorflag, allslavessamestate;
-   boolean allslavespresent = FALSE;
+   boolean allslavespresent = FALSE;      // 所有从站是否都在线
    int wkc;
 
    /* Try to establish the state of all slaves sending only one broadcast datagram.
     * This way a number of datagrams equal to the number of slaves will be sent only if needed.*/
+   // 尝试使用广播读命令获取所有从站状态，优化性能
    rval = 0;
    wkc = ecx_BRD(context->port, 0, ECT_REG_ALSTAT, sizeof(rval), &rval, EC_TIMEOUTRET);
 
+   // 检查工作计数器是否等于或大于从站数量，判断所有从站是否都在线
    if(wkc >= *(context->slavecount))
    {
       allslavespresent = TRUE;
    }
 
+   // 转换字节序并提取状态位
    rval = etohs(rval);
-   bitwisestate = (rval & 0x0f);
+   bitwisestate = (rval & 0x0f);          // 低4位是状态值
 
+   // 检查是否有错误标志
    if ((rval & EC_STATE_ERROR) == 0)
    {
       noerrorflag = TRUE;
@@ -788,6 +812,7 @@ int ecx_readstate(ecx_contextt *context)
       noerrorflag = FALSE;
    }
 
+   // 判断所有从站是否处于相同状态
    switch (bitwisestate)
    {
        /* Note: BOOT State collides with PRE_OP | INIT and cannot be used here */
@@ -803,6 +828,7 @@ int ecx_readstate(ecx_contextt *context)
          break;
    }
 
+   // 如果无错误、状态一致且所有从站在线，直接更新状态
    if (noerrorflag && allslavessamestate && allslavespresent)
    {
       /* No slave has toggled the error flag so the alstatuscode
@@ -820,16 +846,19 @@ int ecx_readstate(ecx_contextt *context)
    {
       /* Not all slaves have the same state or at least one is in error so one datagram per slave
        * is needed. */
+      // 需要逐个读取从站状态
       context->slavelist[0].ALstatuscode = 0;
-      lowest = 0xff;
+      lowest = 0xff;                       // 初始化为最高值
       fslave = 1;
       do
       {
+         // 批量处理，每次最多处理MAX_FPRD_MULTI个从站
          lslave = (uint16)*(context->slavecount);
          if ((lslave - fslave) >= MAX_FPRD_MULTI)
          {
             lslave = fslave + MAX_FPRD_MULTI - 1;
          }
+         // 准备批量读取的数据结构
          for (slave = fslave; slave <= lslave; slave++)
          {
             const ec_alstatust zero = { 0, 0, 0 };
@@ -838,17 +867,21 @@ int ecx_readstate(ecx_contextt *context)
             slca[slave - fslave] = configadr;
             sl[slave - fslave] = zero;
          }
+         // 批量读取从站AL状态
          ecx_FPRD_multi(context, (lslave - fslave) + 1, &(slca[0]), &(sl[0]), EC_TIMEOUTRET3);
+         // 处理读取结果
          for (slave = fslave; slave <= lslave; slave++)
          {
             configadr = context->slavelist[slave].configadr;
             rval = etohs(sl[slave - fslave].alstatus);
             context->slavelist[slave].ALstatuscode = etohs(sl[slave - fslave].alstatuscode);
+            // 记录最低状态值
             if ((rval & 0xf) < lowest)
             {
                lowest = (rval & 0xf);
             }
             context->slavelist[slave].state = rval;
+            // 主站记录所有从站的状态码OR值
             context->slavelist[0].ALstatuscode |= context->slavelist[slave].ALstatuscode;
          }
          fslave = lslave + 1;
@@ -859,11 +892,25 @@ int ecx_readstate(ecx_contextt *context)
    return lowest;
 }
 
-/** Write slave state, if slave = 0 then write to all slaves.
- * The function does not check if the actual state is changed.
- * @param[in]  context        = context struct
- * @param[in] slave    = Slave number, 0 = master
- * @return Workcounter or EC_NOFRAME
+/**
+ * 写入从站状态
+ *
+ * 该函数向从站写入请求的状态，如果slave=0则写入所有从站。
+ * 函数不检查实际状态是否已改变，仅发送状态写入命令。
+ *
+ * EtherCAT状态转换：
+ * - INIT -> PRE_OP: 初始化邮箱通信
+ * - PRE_OP -> SAFE_OP: 配置同步管理器和FMMU
+ * - SAFE_OP -> OPERATIONAL: 启动过程数据交换
+ * - 任何状态 -> INIT: 完全复位
+ *
+ * 写入策略：
+ * - slave = 0: 使用广播写(BWR)命令写入所有从站
+ * - slave > 0: 使用配置地址写(FPWR)命令写入指定从站
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] slave   从站编号，0表示写入所有从站
+ * @return 工作计数器(WKC)，或EC_NOFRAME表示发送失败
  */
 int ecx_writestate(ecx_contextt *context, uint16 slave)
 {
@@ -872,12 +919,14 @@ int ecx_writestate(ecx_contextt *context, uint16 slave)
 
    if (slave == 0)
    {
+      // 广播写入所有从站
       slstate = htoes(context->slavelist[slave].state);
       ret = ecx_BWR(context->port, 0, ECT_REG_ALCTL, sizeof(slstate),
 	            &slstate, EC_TIMEOUTRET3);
    }
    else
    {
+      // 单播写入指定从站
       configadr = context->slavelist[slave].configadr;
 
       ret = ecx_FPWRw(context->port, configadr, ECT_REG_ALCTL,
@@ -959,10 +1008,14 @@ uint16 ecx_statecheck(ecx_contextt *context, uint16 slave, uint16 reqstate, int 
    return state;
 }
 
-/** Get index of next mailbox counter value.
- * Used for Mailbox Link Layer.
- * @param[in] cnt     = Mailbox counter value [0..7]
- * @return next mailbox counter value
+/**
+ * 获取下一个邮箱计数器值
+ *
+ * 邮箱计数器用于邮箱链路层协议，范围是1-7。
+ * 计数器用于跟踪邮箱通信的请求和响应配对。
+ *
+ * @param[in] cnt 当前的邮箱计数器值 [0..7]
+ * @return 下一个邮箱计数器值 [1..7]
  */
 uint8 ec_nextmbxcnt(uint8 cnt)
 {
@@ -975,19 +1028,34 @@ uint8 ec_nextmbxcnt(uint8 cnt)
    return cnt;
 }
 
-/** Clear mailbox buffer.
- * @param[out] Mbx     = Mailbox buffer to clear
+/**
+ * 清除邮箱缓冲区
+ *
+ * 将邮箱缓冲区清零，用于初始化邮箱通信。
+ *
+ * @param[out] Mbx 要清除的邮箱缓冲区指针
  */
 void ec_clearmbx(ec_mbxbuft *Mbx)
 {
     memset(Mbx, 0x00, EC_MAXMBX);
 }
 
-/** Check if IN mailbox of slave is empty.
- * @param[in] context  = context struct
- * @param[in] slave    = Slave number
- * @param[in] timeout  = Timeout in us
- * @return >0 is success
+/**
+ * 检查从站的输入邮箱是否为空
+ *
+ * 该函数检查从站的输入邮箱（IN mailbox）是否为空，可以接收新数据。
+ * 通过读取同步管理器状态寄存器来判断邮箱状态。
+ *
+ * 同步管理器状态寄存器位定义：
+ * - Bit 0: 邮箱已满标志
+ * - Bit 1: 邮箱读取请求
+ * - Bit 2: 邮箱写入请求
+ * - Bit 3: 邮箱空标志
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] slave   从站编号
+ * @param[in] timeout 超时时间（微秒）
+ * @return >0 表示邮箱为空，可以写入；0 表示邮箱不为空或超时
  */
 int ecx_mbxempty(ecx_contextt *context, uint16 slave, int timeout)
 {
@@ -1001,8 +1069,10 @@ int ecx_mbxempty(ecx_contextt *context, uint16 slave, int timeout)
    do
    {
       SMstat = 0;
+      // 读取SM0状态寄存器（输入邮箱状态）
       wkc = ecx_FPRD(context->port, configadr, ECT_REG_SM0STAT, sizeof(SMstat), &SMstat, EC_TIMEOUTRET);
       SMstat = etohs(SMstat);
+      // 如果邮箱不为空，等待一段时间后重试
       if (((SMstat & 0x08) != 0) && (timeout > EC_LOCALDELAY))
       {
          osal_usleep(EC_LOCALDELAY);
@@ -1010,6 +1080,7 @@ int ecx_mbxempty(ecx_contextt *context, uint16 slave, int timeout)
    }
    while (((wkc <= 0) || ((SMstat & 0x08) != 0)) && (osal_timer_is_expired(&timer) == FALSE));
 
+   // 检查邮箱是否为空（Bit 3 = 0 表示邮箱为空）
    if ((wkc > 0) && ((SMstat & 0x08) == 0))
    {
       return 1;
@@ -1018,12 +1089,22 @@ int ecx_mbxempty(ecx_contextt *context, uint16 slave, int timeout)
    return 0;
 }
 
-/** Write IN mailbox to slave.
- * @param[in]  context    = context struct
- * @param[in]  slave      = Slave number
- * @param[out] mbx        = Mailbox data
- * @param[in]  timeout    = Timeout in us
- * @return Work counter (>0 is success)
+/**
+ * 向从站写入输入邮箱
+ *
+ * 该函数将数据写入从站的输入邮箱（IN mailbox），用于发送邮箱数据。
+ * 首先检查邮箱是否为空，然后写入数据。
+ *
+ * 邮箱通信流程：
+ * 1. 检查输入邮箱是否为空
+ * 2. 如果为空，写入数据到邮箱
+ * 3. 从站读取数据后，邮箱变空
+ *
+ * @param[in]  context EtherCAT上下文结构体
+ * @param[in]  slave   从站编号
+ * @param[out] mbx     要发送的邮箱数据
+ * @param[in]  timeout 超时时间（微秒）
+ * @return 工作计数器，>0 表示成功
  */
 int ecx_mbxsend(ecx_contextt *context, uint16 slave,ec_mbxbuft *mbx, int timeout)
 {
@@ -1032,13 +1113,15 @@ int ecx_mbxsend(ecx_contextt *context, uint16 slave,ec_mbxbuft *mbx, int timeout
 
    wkc = 0;
    configadr = context->slavelist[slave].configadr;
-   mbxl = context->slavelist[slave].mbx_l;
+   mbxl = context->slavelist[slave].mbx_l;  // 邮箱长度
    if ((mbxl > 0) && (mbxl <= EC_MAXMBX))
    {
+      // 检查邮箱是否为空
       if (ecx_mbxempty(context, slave, timeout))
       {
-         mbxwo = context->slavelist[slave].mbx_wo;
+         mbxwo = context->slavelist[slave].mbx_wo;  // 邮箱写入偏移地址
          /* write slave in mailbox */
+         // 写入数据到从站输入邮箱
          wkc = ecx_FPWR(context->port, configadr, mbxwo, mbxl, mbx, EC_TIMEOUTRET3);
       }
       else
@@ -1050,13 +1133,31 @@ int ecx_mbxsend(ecx_contextt *context, uint16 slave,ec_mbxbuft *mbx, int timeout
    return wkc;
 }
 
-/** Read OUT mailbox from slave.
- * Supports Mailbox Link Layer with repeat requests.
- * @param[in]  context    = context struct
- * @param[in]  slave      = Slave number
- * @param[out] mbx        = Mailbox data
- * @param[in]  timeout    = Timeout in us
- * @return Work counter (>0 is success)
+/**
+ * 从从站读取输出邮箱
+ *
+ * 该函数从从站的输出邮箱（OUT mailbox）读取数据，用于接收邮箱响应。
+ * 支持邮箱链路层协议的重试请求机制。
+ *
+ * 邮箱通信流程：
+ * 1. 等待输出邮箱有数据可读
+ * 2. 读取邮箱数据
+ * 3. 处理不同类型的响应：
+ *    - 邮箱错误响应：记录错误
+ *    - CoE紧急消息：记录紧急错误
+ *    - EoE分片数据：调用EOE钩子函数
+ *    - 普通响应：返回数据
+ *
+ * 邮箱链路层重试机制：
+ * - 如果读取失败，切换重复请求位
+ * - 等待从站确认切换
+ * - 重新尝试读取邮箱
+ *
+ * @param[in]  context EtherCAT上下文结构体
+ * @param[in]  slave   从站编号
+ * @param[out] mbx     接收邮箱数据的缓冲区
+ * @param[in]  timeout 超时时间（微秒）
+ * @return 工作计数器，>0 表示成功
  */
 int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int timeout)
 {
@@ -1070,7 +1171,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
    ec_mbxerrort *MBXEp;
 
    configadr = context->slavelist[slave].configadr;
-   mbxl = context->slavelist[slave].mbx_rl;
+   mbxl = context->slavelist[slave].mbx_rl;  // 读取邮箱长度
    if ((mbxl > 0) && (mbxl <= EC_MAXMBX))
    {
       osal_timert timer;
@@ -1080,8 +1181,10 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
       do /* wait for read mailbox available */
       {
          SMstat = 0;
+         // 读取SM1状态寄存器（输出邮箱状态）
          wkc = ecx_FPRD(context->port, configadr, ECT_REG_SM1STAT, sizeof(SMstat), &SMstat, EC_TIMEOUTRET);
          SMstat = etohs(SMstat);
+         // 如果邮箱为空，等待一段时间后重试
          if (((SMstat & 0x08) == 0) && (timeout > EC_LOCALDELAY))
          {
             osal_usleep(EC_LOCALDELAY);
@@ -1091,20 +1194,23 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
 
       if ((wkc > 0) && ((SMstat & 0x08) > 0)) /* read mailbox available ? */
       {
-         mbxro = context->slavelist[slave].mbx_ro;
+         mbxro = context->slavelist[slave].mbx_ro;  // 读取邮箱偏移地址
          mbxh = (ec_mbxheadert *)mbx;
          do
          {
             wkc = ecx_FPRD(context->port, configadr, mbxro, mbxl, mbx, EC_TIMEOUTRET); /* get mailbox */
+            // 检查是否是邮箱错误响应
             if ((wkc > 0) && ((mbxh->mbxtype & 0x0f) == 0x00)) /* Mailbox error response? */
             {
                MBXEp = (ec_mbxerrort *)mbx;
                ecx_mbxerror(context, slave, etohs(MBXEp->Detail));
                wkc = 0; /* prevent emergency to cascade up, it is already handled. */
             }
+            // 检查是否是CoE响应
             else if ((wkc > 0) && ((mbxh->mbxtype & 0x0f) == ECT_MBXT_COE)) /* CoE response? */
             {
                EMp = (ec_emcyt *)mbx;
+               // 检查是否是紧急消息
                if ((etohs(EMp->CANOpen) >> 12) == 0x01) /* Emergency request? */
                {
                   ecx_mbxemergencyerror(context, slave, etohs(EMp->ErrorCode), EMp->ErrorReg,
@@ -1112,6 +1218,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
                   wkc = 0; /* prevent emergency to cascade up, it is already handled. */
                }
             }
+            // 检查是否是EoE响应
             else if ((wkc > 0) && ((mbxh->mbxtype & 0x0f) == ECT_MBXT_EOE)) /* EoE response? */
             {
                ec_EOEt * eoembx = (ec_EOEt *)mbx;
@@ -1119,6 +1226,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
                /* All non fragment data frame types are expected to be handled by
                * slave send/receive API if the EoE hook is set
                */
+               // 处理EoE分片数据
                if (EOE_HDR_FRAME_TYPE_GET(frameinfo1) == EOE_FRAG_DATA)
                {
                   if (context->EOEhook)
@@ -1133,6 +1241,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
             }
             else
             {
+               // 读取邮箱丢失，使用链路层重试机制
                if (wkc <= 0) /* read mailbox lost */
                {
                   SMstat ^= 0x0200; /* toggle repeat request */
@@ -1802,61 +1911,104 @@ static void ecx_clearindex(ecx_contextt *context)  {
  * @param[in]  use_overlap_io = 是否使用重叠IO映射的标志
  * @return >0 表示过程数据已发送
  */
+/**
+ * 向EtherCAT从站发送过程数据的核心函数
+ *
+ * 该函数是EtherCAT主站发送过程数据的核心实现，负责将输出数据发送到从站
+ * 并准备接收输入数据。支持多种传输模式和优化策略。
+ *
+ * 主要功能：
+ * 1. 支持重叠IO映射（Overlapping IO Map）模式，输入输出共享内存区域
+ * 2. 支持分布式时钟（DC）同步，通过FRMW命令实现精确时间同步
+ * 3. 根据从站能力选择最优传输命令（LRW/LRD/LWR）
+ * 4. 支持分段传输，处理大数据量的过程数据
+ * 5. 使用栈机制管理多个数据报的发送和接收
+ *
+ * 传输命令选择策略：
+ * - LRW（逻辑读写）：同时读写，最高效，一个命令完成输入输出
+ * - LRD（逻辑读）：仅读取输入数据
+ * - LWR（逻辑写）：仅写入输出数据
+ * - 当从站不支持LRW时（blockLRW=TRUE），使用LRD+LWR组合
+ *
+ * 分布式时钟同步：
+ * - 如果组内有DC从站，在第一个数据报中附加FRMW命令
+ * - FRMW命令读取参考时钟从站的系统时间并广播到所有从站
+ * - 实现纳秒级的时间同步精度
+ *
+ * @param[in] context         EtherCAT上下文结构体
+ * @param[in] group           组号，指定要发送数据的从站组
+ * @param[in] use_overlap_io  是否使用重叠IO映射模式
+ *                            TRUE: 输入输出共享内存，节省内存空间
+ *                            FALSE: 输入输出分离，传统模式
+ * @return 工作计数器，>0表示成功发送，0表示无数据发送
+ */
 static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean use_overlap_io)
 {
-   uint32 LogAdr;
-   uint16 w1, w2;
-   int length;
-   uint16 sublength;
-   uint8 idx;
-   int wkc;
-   uint8* data;
+   uint32 LogAdr;              // 逻辑地址，用于寻址从站的FMMU映射区域
+   uint16 w1, w2;              // 逻辑地址的低16位和高16位
+   int length;                 // 总数据长度
+   uint16 sublength;           // 分段传输时的子长度
+   uint8 idx;                  // 数据报索引
+   int wkc;                    // 工作计数器
+   uint8* data;                // 数据指针
+   // 用于决定是否需要发送FRMW命令（分布式时钟同步）
    boolean first=FALSE;
-   uint16 currentsegment = 0;
-   uint32 iomapinputoffset;
-   uint16 DCO;
+   uint16 currentsegment = 0;  // 当前段索引
+   uint32 iomapinputoffset;    // 重叠IO映射时的输入偏移量
+   uint16 DCO;                 // DC偏移量，用于定位FRMW命令在数据报中的位置
 
    wkc = 0;
+   // 检查该组是否有分布式时钟从站
    if(context->grouplist[group].hasdc)
    {
-      first = TRUE;
+      first = TRUE;  // 标记需要在第一个数据报中添加FRMW命令
    }
 
    /* For overlapping IO map use the biggest */
+   // 根据IO映射模式计算数据长度
    if(use_overlap_io == TRUE)
    {
       /* For overlap IOmap make the frame EQ big to biggest part */
+      // 重叠模式下，帧大小取输入输出的最大值
       length = (context->grouplist[group].Obytes > context->grouplist[group].Ibytes) ?
          context->grouplist[group].Obytes : context->grouplist[group].Ibytes;
       /* Save the offset used to compensate where to save inputs when frame returns */
+      // 保存偏移量，用于在帧返回时确定输入数据的存储位置
       iomapinputoffset = context->grouplist[group].Obytes;
    }
    else
    {
+      // 非重叠模式，总长度为输入输出之和
       length = context->grouplist[group].Obytes + context->grouplist[group].Ibytes;
       iomapinputoffset = 0;
    }
 
+   // 获取组的起始逻辑地址
    LogAdr = context->grouplist[group].logstartaddr;
    if(length)
    {
 
       wkc = 1;
       /* LRW blocked by one or more slaves ? */
+      // 检查是否有从站阻止使用LRW命令
       if(context->grouplist[group].blockLRW)
       {
          /* if inputs available generate LRD */
+         // 如果有输入数据，使用LRD命令读取
          if(context->grouplist[group].Ibytes)
          {
             currentsegment = context->grouplist[group].Isegment;
             data = context->grouplist[group].inputs;
             length = context->grouplist[group].Ibytes;
-            LogAdr += context->grouplist[group].Obytes;
+            LogAdr += context->grouplist[group].Obytes;  // 跳过输出区域
             /* segment transfer if needed */
+            // 分段传输循环
             do
             {
+               // 计算当前段的长度
                if(currentsegment == context->grouplist[group].Isegment)
                {
+                  // 第一段需要考虑偏移量
                   sublength = (uint16)(context->grouplist[group].IOsegment[currentsegment++] - context->grouplist[group].Ioffset);
                }
                else
@@ -1868,19 +2020,23 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
                w1 = LO_WORD(LogAdr);
                w2 = HI_WORD(LogAdr);
                DCO = 0;
+               // 创建LRD（逻辑读）数据报
                ecx_setupdatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_LRD, idx, w1, w2, sublength, data);
                if(first)
                {
                  /* FPRMW in second datagram */
                   // FRMW 0x910 触发从站时间同步
+                  // 在数据报中添加FRMW命令，用于分布式时钟同步
                   DCO = ecx_adddatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_FRMW, idx, FALSE,
                                            context->slavelist[context->grouplist[group].DCnext].configadr,
                                            ECT_REG_DCSYSTIME, sizeof(int64), context->DCtime);
                   first = FALSE;
                }
                /* send frame */
+               // 发送帧（支持冗余）
                ecx_outframe_red(context->port, idx);
                /* push index and data pointer on stack */
+               // 将索引和数据指针压栈，用于后续接收处理
                ecx_pushindex(context, idx, data, sublength, DCO);
                length -= sublength;
                LogAdr += sublength;
@@ -1888,6 +2044,7 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
             } while (length && (currentsegment < context->grouplist[group].nsegments));
          }
          /* if outputs available generate LWR */
+         // 如果有输出数据，使用LWR命令写入
          if(context->grouplist[group].Obytes)
          {
             data = context->grouplist[group].outputs;
@@ -1895,6 +2052,7 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
             LogAdr = context->grouplist[group].logstartaddr;
             currentsegment = 0;
             /* segment transfer if needed */
+            // 分段传输循环
             do
             {
                sublength = (uint16)context->grouplist[group].IOsegment[currentsegment++];
@@ -1907,10 +2065,12 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
                w1 = LO_WORD(LogAdr);
                w2 = HI_WORD(LogAdr);
                DCO = 0;
+               // 创建LWR（逻辑写）数据报
                ecx_setupdatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_LWR, idx, w1, w2, sublength, data);
                if(first)
                {
                   /* FPRMW in second datagram */
+                  // 在数据报中添加FRMW命令
                   DCO = ecx_adddatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_FRMW, idx, FALSE,
                                            context->slavelist[context->grouplist[group].DCnext].configadr,
                                            ECT_REG_DCSYSTIME, sizeof(int64), context->DCtime);
@@ -1927,8 +2087,10 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
          }
       }
       /* LRW can be used */
+      // 可以使用LRW命令（最高效的方式）
       else
       {
+         // 确定数据指针：优先使用输出数据
          if (context->grouplist[group].Obytes)
          {
             data = context->grouplist[group].outputs;
@@ -1937,9 +2099,11 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
          {
             data = context->grouplist[group].inputs;
             /* Clear offset, don't compensate for overlapping IOmap if we only got inputs */
+            // 如果只有输入，清除偏移量
             iomapinputoffset = 0;
          }
          /* segment transfer if needed */
+         // 分段传输循环
          do
          {
             sublength = (uint16)context->grouplist[group].IOsegment[currentsegment++];
@@ -1948,6 +2112,8 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
             w1 = LO_WORD(LogAdr);
             w2 = HI_WORD(LogAdr);
             DCO = 0;
+            // 创建LRW（逻辑读写）数据报
+            // LRW命令在一个帧中同时完成读和写操作，效率最高
             ecx_setupdatagram(context->port, &(context->port->txbuf[idx]), EC_CMD_LRW, idx, w1, w2, sublength, data);
             if(first)
             {
@@ -1965,6 +2131,7 @@ static int ecx_main_send_processdata(ecx_contextt *context, uint8 group, boolean
              * in the IOmap if we use an overlapping IOmap. If a regular IOmap
              * is used it should always be 0.
              */
+            // 压栈时考虑重叠IO映射的偏移量
             ecx_pushindex(context, idx, (data + iomapinputoffset), sublength, DCO);
             length -= sublength;
             LogAdr += sublength;

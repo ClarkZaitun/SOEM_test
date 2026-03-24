@@ -332,8 +332,25 @@ static int ecx_config_from_table(ecx_contextt *context, uint16 slave)
 }
 #endif
 
-/* If slave has SII and same slave ID done before, use previous data.
- * This is safe because SII is constant for same slave ID.
+/**
+ * 查找之前相同从站的SII信息
+ *
+ * 如果从站有SII（从站信息接口）且之前已经处理过相同ID的从站，
+ * 则复用之前的SII数据。这是安全的，因为相同ID从站的SII信息是相同的。
+ *
+ * 该优化可以显著减少配置时间，避免重复读取EEPROM。
+ *
+ * 复用的信息包括：
+ * - CoE/FoE/EoE/SoE详情
+ * - blockLRW标志
+ * - E-bus电流
+ * - 从站名称
+ * - SM配置
+ * - FMMU功能
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] slave   当前从站编号
+ * @return 1表示找到并复制了之前的SII信息，0表示未找到
  */
 static int ecx_lookup_prev_sii(ecx_contextt *context, uint16 slave)
 {
@@ -341,6 +358,7 @@ static int ecx_lookup_prev_sii(ecx_contextt *context, uint16 slave)
    if ((slave > 1) && (*(context->slavecount) > 0))
    {
       i = 1;
+      // 遍历之前的从站，查找相同制造商ID、设备ID和版本的从站
       while(((context->slavelist[i].eep_man != context->slavelist[slave].eep_man) ||
              (context->slavelist[i].eep_id  != context->slavelist[slave].eep_id ) ||
              (context->slavelist[i].eep_rev != context->slavelist[slave].eep_rev)) &&
@@ -348,26 +366,33 @@ static int ecx_lookup_prev_sii(ecx_contextt *context, uint16 slave)
       {
          i++;
       }
+      // 找到相同的从站
       if(i < slave)
       {
+         // 复制协议详情
          context->slavelist[slave].CoEdetails = context->slavelist[i].CoEdetails;
          context->slavelist[slave].FoEdetails = context->slavelist[i].FoEdetails;
          context->slavelist[slave].EoEdetails = context->slavelist[i].EoEdetails;
          context->slavelist[slave].SoEdetails = context->slavelist[i].SoEdetails;
+         // 复制blockLRW标志
          if(context->slavelist[i].blockLRW > 0)
          {
             context->slavelist[slave].blockLRW = 1;
             context->slavelist[0].blockLRW++;
          }
+         // 复制E-bus电流
          context->slavelist[slave].Ebuscurrent = context->slavelist[i].Ebuscurrent;
          context->slavelist[0].Ebuscurrent += context->slavelist[slave].Ebuscurrent;
+         // 复制从站名称
          memcpy(context->slavelist[slave].name, context->slavelist[i].name, EC_MAXNAME + 1);
+         // 复制SM配置
          for( nSM=0 ; nSM < EC_MAXSM ; nSM++ )
          {
             context->slavelist[slave].SM[nSM].StartAddr = context->slavelist[i].SM[nSM].StartAddr;
             context->slavelist[slave].SM[nSM].SMlength  = context->slavelist[i].SM[nSM].SMlength;
             context->slavelist[slave].SM[nSM].SMflags   = context->slavelist[i].SM[nSM].SMflags;
          }
+         // 复制FMMU功能
          context->slavelist[slave].FMMU0func = context->slavelist[i].FMMU0func;
          context->slavelist[slave].FMMU1func = context->slavelist[i].FMMU1func;
          context->slavelist[slave].FMMU2func = context->slavelist[i].FMMU2func;
@@ -784,8 +809,19 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
    return wkc;
 }
 
-/* If slave has SII mapping and same slave ID done before, use previous mapping.
- * This is safe because SII mapping is constant for same slave ID.
+/**
+ * 查找之前相同从站的PDO映射
+ *
+ * 如果从站有SII映射且之前已经处理过相同ID的从站，
+ * 则复用之前的映射数据。这是安全的，因为相同ID从站的SII映射是相同的。
+ *
+ * 该优化可以显著减少配置时间，避免重复读取PDO映射。
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] slave   当前从站编号
+ * @param[out] Osize  输出数据大小（位）
+ * @param[out] Isize  输入数据大小（位）
+ * @return 1表示找到并复制了之前的映射信息，0表示未找到
  */
 static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, uint32 *Osize, uint32 *Isize)
 {
@@ -793,6 +829,7 @@ static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, uint32 *Osize
    if ((slave > 1) && (*(context->slavecount) > 0))
    {
       i = 1;
+      // 遍历之前的从站，查找相同制造商ID、设备ID和版本的从站
       while(((context->slavelist[i].eep_man != context->slavelist[slave].eep_man) ||
              (context->slavelist[i].eep_id  != context->slavelist[slave].eep_id ) ||
              (context->slavelist[i].eep_rev != context->slavelist[slave].eep_rev)) &&
@@ -800,13 +837,16 @@ static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, uint32 *Osize
       {
          i++;
       }
+      // 找到相同的从站
       if(i < slave)
       {
+         // 复制SM长度和类型
          for( nSM=0 ; nSM < EC_MAXSM ; nSM++ )
          {
             context->slavelist[slave].SM[nSM].SMlength = context->slavelist[i].SM[nSM].SMlength;
             context->slavelist[slave].SMtype[nSM] = context->slavelist[i].SMtype[nSM];
          }
+         // 复制输入输出大小
          *Osize = context->slavelist[i].Obits;
          *Isize = context->slavelist[i].Ibits;
          context->slavelist[slave].Obits = (uint16)*Osize;
@@ -818,6 +858,23 @@ static int ecx_lookup_mapping(ecx_contextt *context, uint16 slave, uint32 *Osize
    return 0;
 }
 
+/**
+ * 通过CoE和SoE协议映射PDO
+ *
+ * 该函数使用CoE（CANopen over EtherCAT）和SoE（Servo over EtherCAT）
+ * 协议读取从站的PDO映射信息。
+ *
+ * 映射策略：
+ * 1. 首先检查从站是否支持CoE协议
+ * 2. 如果支持CoE且支持完全访问(CA)，使用CA方式读取PDO映射
+ * 3. 如果CA不可用，使用标准SDO方式读取PDO映射
+ * 4. 如果CoE映射失败且从站支持SoE，使用SoE方式读取IDN映射
+ *
+ * @param[in] context   EtherCAT上下文结构体
+ * @param[in] slave     从站编号
+ * @param[in] thread_n  线程号（用于多线程映射）
+ * @return 1表示成功
+ */
 static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
 {
    uint32 Isize, Osize;
@@ -829,6 +886,7 @@ static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
             slave, context->slavelist[slave].configadr, context->slavelist[slave].state);
 
    /* execute special slave configuration hook Pre-Op to Safe-OP */
+   // 执行从站特殊配置钩子函数（PRE_OP到SAFE_OP转换）
    if(context->slavelist[slave].PO2SOconfig) /* only if registered */
    {
       context->slavelist[slave].PO2SOconfig(slave);
@@ -838,33 +896,41 @@ static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
       context->slavelist[slave].PO2SOconfigx(context, slave);
    }
    /* if slave not found in configlist find IO mapping in slave self */
+   // 如果从站不在配置表中，从从站自身查找IO映射
    if (!context->slavelist[slave].configindex)
    {
       Isize = 0;
       Osize = 0;
+      // 检查从站是否支持CoE协议
       if (context->slavelist[slave].mbx_proto & ECT_MBXPROT_COE) /* has CoE */
       {
          rval = 0;
+         // 检查是否支持完全访问(CA)
          if (context->slavelist[slave].CoEdetails & ECT_COEDET_SDOCA) /* has Complete Access */
          {
             /* read PDO mapping via CoE and use Complete Access */
+            // 使用CA方式读取PDO映射，效率更高
             rval = ecx_readPDOmapCA(context, slave, thread_n, &Osize, &Isize);
          }
          if (!rval) /* CA not available or not succeeded */
          {
             /* read PDO mapping via CoE */
+            // 使用标准SDO方式读取PDO映射
             rval = ecx_readPDOmap(context, slave, &Osize, &Isize);
          }
          EC_PRINT("  CoE Osize:%u Isize:%u\n", Osize, Isize);
       }
+      // 如果CoE映射失败且从站支持SoE协议
       if ((!Isize && !Osize) && (context->slavelist[slave].mbx_proto & ECT_MBXPROT_SOE)) /* has SoE */
       {
          /* read AT / MDT mapping via SoE */
+         // 使用SoE方式读取AT/MDT映射
          rval = ecx_readIDNmap(context, slave, &Osize, &Isize);
          context->slavelist[slave].SM[2].SMlength = htoes((uint16)((Osize + 7) / 8));
          context->slavelist[slave].SM[3].SMlength = htoes((uint16)((Isize + 7) / 8));
          EC_PRINT("  SoE Osize:%u Isize:%u\n", Osize, Isize);
       }
+      // 保存输入输出位数
       context->slavelist[slave].Obits = (uint16)Osize;
       context->slavelist[slave].Ibits = (uint16)Isize;
    }
@@ -872,6 +938,22 @@ static int ecx_map_coe_soe(ecx_contextt *context, uint16 slave, int thread_n)
    return 1;
 }
 
+/**
+ * 通过SII（从站信息接口）映射PDO
+ *
+ * 该函数从从站EEPROM的SII区域读取PDO映射信息。
+ * 如果之前已经处理过相同ID的从站，则复用之前的映射数据。
+ *
+ * SII PDO映射流程：
+ * 1. 检查是否已有输入输出大小
+ * 2. 如果没有，查找之前相同从站的映射
+ * 3. 如果未找到，从SII读取PDO映射
+ * 4. 配置SM长度和类型
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] slave   从站编号
+ * @return 1表示成功
+ */
 static int ecx_map_sii(ecx_contextt *context, uint16 slave)
 {
    uint32 Isize, Osize;
@@ -883,34 +965,41 @@ static int ecx_map_sii(ecx_contextt *context, uint16 slave)
 
    if (!Isize && !Osize) /* find PDO in previous slave with same ID */
    {
+      // 查找之前相同从站的映射
       (void)ecx_lookup_mapping(context, slave, &Osize, &Isize);
    }
    if (!Isize && !Osize) /* find PDO mapping by SII */
    {
+      // 从SII读取PDO映射
       memset(&eepPDO, 0, sizeof(eepPDO));
+      // 读取输入PDO映射
       Isize = ecx_siiPDO(context, slave, &eepPDO, 0);
       EC_PRINT("  SII Isize:%u\n", Isize);
+      // 配置输入SM
       for( nSM=0 ; nSM < EC_MAXSM ; nSM++ )
       {
          if (eepPDO.SMbitsize[nSM] > 0)
          {
             context->slavelist[slave].SM[nSM].SMlength =  htoes((eepPDO.SMbitsize[nSM] + 7) / 8);
-            context->slavelist[slave].SMtype[nSM] = 4;
+            context->slavelist[slave].SMtype[nSM] = 4;  // 类型4：输入过程数据
             EC_PRINT("    SM%d length %d\n", nSM, eepPDO.SMbitsize[nSM]);
          }
       }
+      // 读取输出PDO映射
       Osize = ecx_siiPDO(context, slave, &eepPDO, 1);
       EC_PRINT("  SII Osize:%u\n", Osize);
+      // 配置输出SM
       for( nSM=0 ; nSM < EC_MAXSM ; nSM++ )
       {
          if (eepPDO.SMbitsize[nSM] > 0)
          {
             context->slavelist[slave].SM[nSM].SMlength =  htoes((eepPDO.SMbitsize[nSM] + 7) / 8);
-            context->slavelist[slave].SMtype[nSM] = 3;
+            context->slavelist[slave].SMtype[nSM] = 3;  // 类型3：输出过程数据
             EC_PRINT("    SM%d length %d\n", nSM, eepPDO.SMbitsize[nSM]);
          }
       }
    }
+   // 保存输入输出位数
    context->slavelist[slave].Obits = (uint16)Osize;
    context->slavelist[slave].Ibits = (uint16)Isize;
    EC_PRINT("     ISIZE:%d %d OSIZE:%d\n",
@@ -919,6 +1008,28 @@ static int ecx_map_sii(ecx_contextt *context, uint16 slave)
    return 1;
 }
 
+/**
+ * 编程从站的同步管理器(SM)
+ *
+ * 该函数将配置好的同步管理器写入从站寄存器。
+ * 根据SM类型和长度设置使能标志，并计算输入输出字节数。
+ *
+ * SM编程流程：
+ * 1. 如果从站没有邮箱且SM0/SM1有起始地址，编程SM0/SM1
+ * 2. 编程SM2到SMx（过程数据SM）
+ * 3. 根据SM长度设置使能标志
+ * 4. 计算输入输出字节数
+ *
+ * SM类型：
+ * - 类型1：邮箱入
+ * - 类型2：邮箱出
+ * - 类型3：输出过程数据
+ * - 类型4：输入过程数据
+ *
+ * @param[in] context EtherCAT上下文结构体
+ * @param[in] slave   从站编号
+ * @return 1表示成功
+ */
 static int ecx_map_sm(ecx_contextt *context, uint16 slave)
 {
    uint16 configadr;
@@ -927,6 +1038,7 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
    configadr = context->slavelist[slave].configadr;
 
    EC_PRINT("  SM programming\n");
+   // 如果从站没有邮箱且SM0有起始地址，编程SM0
    if (!context->slavelist[slave].mbx_l && context->slavelist[slave].SM[0].StartAddr)
    {
       ecx_FPWR(context->port, configadr, ECT_REG_SM0,
@@ -936,6 +1048,7 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
           etohs(context->slavelist[slave].SM[0].StartAddr),
           etohl(context->slavelist[slave].SM[0].SMflags));
    }
+   // 如果从站没有邮箱且SM1有起始地址，编程SM1
    if (!context->slavelist[slave].mbx_l && context->slavelist[slave].SM[1].StartAddr)
    {
       ecx_FPWR(context->port, configadr, ECT_REG_SM1,
@@ -946,22 +1059,26 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
           etohl(context->slavelist[slave].SM[1].SMflags));
    }
    /* program SM2 to SMx */
+   // 编程SM2到SMx（过程数据SM）
    for( nSM = 2 ; nSM < EC_MAXSM ; nSM++ )
    {
       if (context->slavelist[slave].SM[nSM].StartAddr)
       {
          /* check if SM length is zero -> clear enable flag */
+         // 如果SM长度为0，清除使能标志
          if( context->slavelist[slave].SM[nSM].SMlength == 0)
          {
             context->slavelist[slave].SM[nSM].SMflags =
                htoel( etohl(context->slavelist[slave].SM[nSM].SMflags) & EC_SMENABLEMASK);
          }
          /* if SM length is non zero always set enable flag */
+         // 如果SM长度不为0，设置使能标志
          else
          {
             context->slavelist[slave].SM[nSM].SMflags =
                htoel( etohl(context->slavelist[slave].SM[nSM].SMflags) | ~EC_SMENABLEMASK);
          }
+         // 写入SM配置到从站
          ecx_FPWR(context->port, configadr, (uint16)(ECT_REG_SM0 + (nSM * sizeof(ec_smt))),
             sizeof(ec_smt), &context->slavelist[slave].SM[nSM], EC_TIMEOUTRET3);
          EC_PRINT("    SM%d Type:%d StartAddr:%4.4x Flags:%8.8x\n", nSM,
@@ -970,10 +1087,12 @@ static int ecx_map_sm(ecx_contextt *context, uint16 slave)
              etohl(context->slavelist[slave].SM[nSM].SMflags));
       }
    }
+   // 计算输入字节数
    if (context->slavelist[slave].Ibits > 7)
    {
       context->slavelist[slave].Ibytes = (context->slavelist[slave].Ibits + 7) / 8;
    }
+   // 计算输出字节数
    if (context->slavelist[slave].Obits > 7)
    {
       context->slavelist[slave].Obytes = (context->slavelist[slave].Obits + 7) / 8;
@@ -1656,11 +1775,11 @@ static int ecx_main_config_map_group(ecx_contextt *context, void *pIOmap, uint8 
       }
 
       // 保存输出映射信息
-      context->grouplist[group].outputs = pIOmap;
-      context->grouplist[group].Obytes = LogAddr - context->grouplist[group].logstartaddr;
-      context->grouplist[group].nsegments = currentsegment + 1;
-      context->grouplist[group].Isegment = currentsegment;
-      context->grouplist[group].Ioffset = (uint16)segmentsize;
+      context->grouplist[group].outputs = pIOmap;               // 设置组的输出映射指针，指向IO映射数组
+      context->grouplist[group].Obytes = LogAddr - context->grouplist[group].logstartaddr;  // 计算输出字节数，从组起始地址到当前逻辑地址的差值
+      context->grouplist[group].nsegments = currentsegment + 1;  // 设置组的段数量，currentsegment从0开始计数
+      context->grouplist[group].Isegment = currentsegment;       // 设置输入段索引，指向当前最后一个段
+      context->grouplist[group].Ioffset = (uint16)segmentsize;   // 设置输入偏移量，即当前段的大小
 
       // 如果是组0，保存到主站记录
       if (!group)
