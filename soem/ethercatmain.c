@@ -471,17 +471,33 @@ int16 ecx_siifind(ecx_contextt *context, uint16 slave, uint16 cat)
    return a;
 }
 
-/** Get string from SII string section in slave EEPROM.
- *  @param[in]  context = context struct
- *  @param[out] str     = requested string, 0x00 if not found
- *  @param[in]  slave   = slave number
- *  @param[in]  Sn      = string number
+/**
+ * 从从站EEPROM的SII字符串区域获取字符串
+ *
+ * 该函数从从站EEPROM的SII（从站信息接口）字符串区域读取指定编号的字符串。
+ * SII字符串区域存储了从站的名称、描述等文本信息。
+ *
+ * SII字符串区域结构：
+ * - 字节0-1: 字符串数量
+ * - 后续: 每个字符串以长度字节开头，后跟字符串内容
+ *
+ * 字符串读取流程：
+ * 1. 查找SII字符串区域的起始位置
+ * 2. 读取字符串总数
+ * 3. 遍历字符串直到找到请求的字符串
+ * 4. 复制字符串内容到输出缓冲区
+ * 5. 添加字符串终止符
+ *
+ * @param[in]  context EtherCAT上下文结构体
+ * @param[out] str     输出字符串缓冲区，如果未找到则返回空字符串
+ * @param[in]  slave   从站编号
+ * @param[in]  Sn      字符串编号（从1开始）
  */
 void ecx_siistring(ecx_contextt *context, char *str, uint16 slave, uint16 Sn)
 {
-   uint16 a,i,j,l,n,ba;
+   uint16 a,i,j,l,n,ba;  // 地址变量、循环变量、长度、字符串数量、基地址
    char *ptr;
-   uint8 eectl = context->slavelist[slave].eep_pdi;
+   uint8 eectl = context->slavelist[slave].eep_pdi;  // 保存EEPROM控制状态
 
    ptr = str;
    a = ecx_siifind (context, slave, ECT_SII_STRING); /* find string section */
@@ -491,18 +507,22 @@ void ecx_siistring(ecx_contextt *context, char *str, uint16 slave, uint16 Sn)
       n = ecx_siigetbyte(context, slave, ba++); /* read number of strings in section */
       if (Sn <= n) /* is req string available? */
       {
+         // 遍历字符串，找到请求的字符串编号
          for (i = 1; i <= Sn; i++) /* walk through strings */
          {
             l = ecx_siigetbyte(context, slave, ba++); /* length of this string */
+            // 如果不是请求的字符串，跳过
             if (i < Sn)
             {
                ba += l;
             }
             else
             {
+               // 找到请求的字符串，复制内容
                ptr = str;
                for (j = 1; j <= l; j++) /* copy one string */
                {
+                  // 限制字符串长度不超过EC_MAXNAME
                   if(j <= EC_MAXNAME)
                   {
                      *ptr = (char)ecx_siigetbyte(context, slave, ba++);
@@ -519,10 +539,12 @@ void ecx_siistring(ecx_contextt *context, char *str, uint16 slave, uint16 Sn)
       }
       else
       {
+         // 请求的字符串编号超出范围，返回空字符串
          ptr = str;
          *ptr = 0; /* empty string */
       }
    }
+   // 恢复EEPROM控制状态
    if (eectl)
    {
       ecx_eeprom2pdi(context, slave); /* if eeprom control was previously pdi then restore */

@@ -453,7 +453,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          // 计算地址指针（AP寻址方式）
          ADPh = (uint16)(1 - slave);
 
-         // 读取从站接口类型
+         // 读取从站PDI接口类型 0x0140
          val16 = ecx_APRDw(context->port, ADPh, ECT_REG_PDICTL, EC_TIMEOUTRET3);
          context->slavelist[slave].Itype = etohs(val16);
 
@@ -471,6 +471,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          {
             b = 0; /* 后续从站传递所有帧 */
          }
+         // 设置从站是否丢弃非EtherCAT帧
          ecx_APWRw(context->port, ADPh, ECT_REG_DLCTL, htoes(b), EC_TIMEOUTRET3);
 
          // 读取配置地址
@@ -482,7 +483,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          ecx_FPRD(context->port, configadr, ECT_REG_ALIAS, sizeof(aliasadr), &aliasadr, EC_TIMEOUTRET3);
          context->slavelist[slave].aliasadr = etohs(aliasadr);
 
-         // 读取EEPROM状态
+         // 读取EEPROM状态 0x502
          ecx_FPRD(context->port, configadr, ECT_REG_EEPSTAT, sizeof(estat), &estat, EC_TIMEOUTRET3);
          estat = etohs(estat);
 
@@ -557,7 +558,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
          // 读取从站配置地址
          configadr = context->slavelist[slave].configadr;
 
-         // 检查从站是否支持分布式时钟(DC)
+         // 检查从站是否支持分布式时钟(DC) 0x0008
          val16 = ecx_FPRDw(context->port, configadr, ECT_REG_ESCSUP, EC_TIMEOUTRET3);
          if ((etohs(val16) & 0x04) > 0)
          {
@@ -568,7 +569,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             context->slavelist[slave].hasdc = FALSE;
          }
 
-         // 从DL状态中提取拓扑结构
+         // 从DL状态中提取拓扑结构 0x0110
          topology = ecx_FPRDw(context->port, configadr, ECT_REG_DLSTAT, EC_TIMEOUTRET3);
          topology = etohs(topology);
          h = 0;  // 活动端口数量
@@ -596,7 +597,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             b |= 0x08;
          }
 
-         /* ptype = 物理类型 */
+         /* ptype = 物理类型 读取 0x0007 */
          val16 = ecx_FPRDw(context->port, configadr, ECT_REG_PORTDES, EC_TIMEOUTRET3);
          context->slavelist[slave].ptype = LO_BYTE(etohs(val16));
          context->slavelist[slave].topology = h;
@@ -661,7 +662,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             context->slavelist[slave].SM[1].SMlength = htoes(context->slavelist[slave].mbx_rl);
             context->slavelist[slave].SM[1].SMflags = htoel(EC_DEFAULTMBXSM1);
 
-            // 读取邮箱协议
+            // 读取支持的邮箱协议
             eedat = ecx_readeeprom2(context, slave, EC_TIMEOUTEEP);
             context->slavelist[slave].mbx_proto = (uint16)etohl(eedat);
          }
@@ -673,7 +674,7 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             cindex = ecx_config_from_table(context, slave);
          }
 
-         /* 从站不在配置表中，通过SII查找信息 */
+         /* 从站不在配置表中，并且未通过SII查找信息 */
          if (!cindex && !ecx_lookup_prev_sii(context, slave))
          {
             // 查找SII通用部分

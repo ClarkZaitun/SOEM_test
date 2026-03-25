@@ -121,7 +121,7 @@ typedef struct ec_slave
    uint32           eep_rev;
    /** 接口类型 */
    uint16           Itype;
-   /** 设备类型 */
+   /** 设备类型，从配置列表中读取的信息，EEPROM中没有 */
    uint16           Dtype;
    /** 输出位数 */
    uint16           Obits;
