@@ -705,7 +705,8 @@ int ecx_config_init(ecx_contextt *context, uint8 usetable)
             /* SII字符串部分 */
             if (ecx_siifind(context, slave, ECT_SII_STRING) > 0)
             {
-               // 读取从站名称
+              // 读取从站名称，字符串段Category String的第一个字符串
+              // Group Information (Vendor specific) - Index to STRINGS [Esi:DeviceType:GroupType]
                ecx_siistring(context, context->slavelist[slave].name, slave, 1);
             }
             /* 未找到从站名称，使用构造的名称 */

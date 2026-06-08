@@ -1384,6 +1384,7 @@ int ecx_mbxreceive(ecx_contextt *context, uint16 slave, ec_mbxbuft *mbx, int tim
       osal_timer_start(&timer, timeout);
       wkc = 0;
 
+      // TODO 如果调用这个函数时邮箱没有数据，会直接返回吗？
       /* 等待输出邮箱有数据可读 */
       /* SM状态寄存器bit3 (0x08) 表示邮箱有数据 */
       do /* wait for read mailbox available */
